@@ -15,9 +15,7 @@ using Smartstore.Core.Identity;
 using Smartstore.Core.Identity.Rules;
 using Smartstore.Core.Rules;
 using Smartstore.Core.Rules.Filters;
-using Smartstore.Core.Security;
 using Smartstore.Data;
-using Smartstore.Data.Hooks;
 using Smartstore.Scheduling;
 using Smartstore.Threading;
 
@@ -37,6 +35,16 @@ internal sealed class TestableTargetGroupEvaluatorTask(
     : TargetGroupEvaluatorTask(db, cache, ruleService, ruleProviderFactory)
 {
     public int LastDeletedCount { get; private set; }
+
+    private int _commitCount;
+    public CancellationTokenSource CommitCts { get; set; }
+
+    protected override async Task CommitChunkAsync(DbContextScope scope, CancellationToken cancelToken)
+    {
+        await base.CommitChunkAsync(scope, cancelToken);
+        if (Interlocked.Increment(ref _commitCount) == 1)
+            CommitCts?.Cancel();
+    }
 
     protected override async Task<int> DeleteSystemMappingsAsync(IQueryable<CustomerRoleMapping> query, CancellationToken cancelToken)
     {
@@ -144,7 +152,7 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
             parameters);
     }
 
-    private void SeedSystemMappings(params (int customerId, int roleId)[] mappings)
+    private void SeedMappings(bool isSystem, params (int customerId, int roleId)[] mappings)
     {
         foreach (var (customerId, roleId) in mappings)
         {
@@ -152,23 +160,7 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
             {
                 CustomerId = customerId,
                 CustomerRoleId = roleId,
-                IsSystemMapping = true
-            });
-        }
-
-        DbContext.SaveChanges();
-        DbContext.ChangeTracker.Clear();
-    }
-
-    private void SeedNonSystemMappings(params (int customerId, int roleId)[] mappings)
-    {
-        foreach (var (customerId, roleId) in mappings)
-        {
-            DbContext.CustomerRoleMappings.Add(new CustomerRoleMapping
-            {
-                CustomerId = customerId,
-                CustomerRoleId = roleId,
-                IsSystemMapping = false
+                IsSystemMapping = isSystem
             });
         }
 
@@ -196,6 +188,7 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
 
         DbContext.CustomerRoles.Add(role);
         DbContext.SaveChanges();
+        DbContext.ChangeTracker.Clear();
 
         return role;
     }
@@ -255,8 +248,8 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
     public async Task Run_WithoutCustomerRoleIds_DeletesAllSystemMappings()
     {
         // Arrange
-        SeedSystemMappings((1, 10), (2, 20), (3, 30));
-        SeedNonSystemMappings((4, 40));
+        SeedMappings(true,(1, 10), (2, 20), (3, 30));
+        SeedMappings(false,(4, 40));
 
         var ctx = CreateTaskExecutionContext();
 
@@ -279,8 +272,8 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
     public async Task Run_WithCustomerRoleIds_DeletesOnlyMatchingSystemMappings()
     {
         // Arrange
-        SeedSystemMappings((1, 10), (2, 20), (3, 30));
-        SeedNonSystemMappings((4, 10));
+        SeedMappings(true,(1, 10), (2, 20), (3, 30));
+        SeedMappings(false,(4, 10));
 
         var parameters = new Dictionary<string, string>
         {
@@ -359,6 +352,7 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
 
         DbContext.CustomerRoles.Add(role);
         await DbContext.SaveChangesAsync();
+        DbContext.ChangeTracker.Clear();
 
         var filterExpression1 = new FilterExpressionGroup(typeof(Customer));
         var filterExpression2 = new FilterExpressionGroup(typeof(Customer));
@@ -530,7 +524,7 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
     public async Task Run_ClearsAclCacheWhenSystemMappingsDeleted()
     {
         // Arrange: seed system mappings that will be deleted (numDeleted > 0)
-        SeedSystemMappings((1, 10));
+        SeedMappings(true,(1, 10));
 
         var ctx = CreateTaskExecutionContext();
 
@@ -608,6 +602,7 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
 
         DbContext.CustomerRoles.Add(role);
         await DbContext.SaveChangesAsync();
+        DbContext.ChangeTracker.Clear();
 
         var cts = new CancellationTokenSource();
 
@@ -617,7 +612,6 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
         // on ordering. Instead, we cancel on the first invocation and verify that
         // only one total call was made (meaning the second was skipped).
         var nonFilterGroup = new Mock<IRuleExpressionGroup>();
-        var callCount = 0;
         _ruleServiceMock
             .Setup(x => x.CreateExpressionGroupAsync(
                 It.IsAny<RuleSetEntity>(),
@@ -625,7 +619,6 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
                 false))
             .Returns((RuleSetEntity _, IRuleVisitor _, bool _) =>
             {
-                Interlocked.Increment(ref callCount);
                 cts.Cancel();
                 return Task.FromResult(nonFilterGroup.Object);
             });
@@ -648,61 +641,37 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
     [Test]
     public async Task Run_RespectsCancellationInChunkInsertionLoop()
     {
-        // Arrange: create a role with customers
+        // Arrange: 600 customers produce two chunks (500 + 100).
+        // The CommitChunkAsync override cancels after the first commit so the second
+        // chunk is blocked by the cancellation checkpoint at line 82-84.
         var role = SeedActiveRoleWithRuleSet("CancelChunkRole");
         var ruleSet = role.RuleSets.First();
-
-        // Return a non-FilterExpression from CreateExpressionGroupAsync for the first
-        // rule set (so the task skips the paging code) but still indicate there are
-        // customer IDs to insert. Since we cannot bypass the paging without customers,
-        // we use a different approach: verify the chunk loop cancellation by checking
-        // that the task exits early when the token is cancelled before the chunk loop.
-        //
-        // The cancellation check in the chunk loop: `if (cancelToken.IsCancellationRequested) return;`
-        // We verify this by setting up the task to collect customer IDs normally, then
-        // pre-cancelling the token so the ruleSet loop exits before chunks are processed.
-        //
-        // Note: In the production code, the ruleSet loop check comes BEFORE the chunk loop.
-        // Both checkpoints (`cancelToken.IsCancellationRequested`) serve the same purpose:
-        // early exit. We verify that the task respects the token at both points.
 
         var filterExpression = new FilterExpressionGroup(typeof(Customer));
         SetupRuleServiceForRuleSet(ruleSet, filterExpression);
 
         var customers = new List<Customer>();
-        for (var i = 1; i <= 3; i++)
-        {
+        for (var i = 1; i <= 600; i++)
             customers.Add(new Customer { Id = i });
-        }
         SetupTargetGroupServiceForExpression(filterExpression, customers);
 
-        // Cancel token. The ruleSet loop check fires first, preventing any
-        // chunk processing from occurring.
         var cts = new CancellationTokenSource();
-        cts.Cancel();
+        _task.CommitCts = cts;
 
         var ctx = CreateTaskExecutionContext();
 
-        // Act: the pre-cancelled token causes the ruleSet loop to exit early,
-        // which also means the chunk insertion loop is never reached.
-        // We expect either OperationCanceledException (from EF Core operations)
-        // or a clean early return (from the task's own checks).
-        try
-        {
-            await _task.Run(ctx, cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected: EF Core InMemory provider throws when the token is
-            // already cancelled during ToListAsync in the roles query or FastPager.
-        }
+        // Act: Run completes via early return at the chunk-loop checkpoint.
+        await _task.Run(ctx, cts.Token);
 
-        // Assert: no system mappings were added because the task exited early.
+        // Assert: only the first 500-record chunk was committed; the second
+        // chunk was skipped because cancelToken.IsCancellationRequested returned
+        // true at the chunk-insertion-loop checkpoint.
         var mappings = await DbContext.CustomerRoleMappings
             .AsNoTracking()
             .Where(m => m.IsSystemMapping)
             .ToListAsync();
-        Assert.That(mappings, Is.Empty);
+        Assert.That(mappings.Count, Is.EqualTo(500),
+            "Only the first 500-record chunk should be committed before cancellation.");
     }
 
     #endregion

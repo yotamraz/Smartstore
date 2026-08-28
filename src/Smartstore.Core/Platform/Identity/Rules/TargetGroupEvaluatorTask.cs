@@ -95,7 +95,7 @@ public partial class TargetGroupEvaluatorTask(
                             ++numAdded;
                         }
 
-                        await scope.CommitAsync(cancelToken);
+                        await CommitChunkAsync(scope, cancelToken);
                     }
 
                     try
@@ -116,6 +116,9 @@ public partial class TargetGroupEvaluatorTask(
 
         Debug.WriteLineIf(numDeleted > 0 || numAdded > 0, $"Deleted {numDeleted} and added {numAdded} customer assignments for {rolesCount} roles.");
     }
+
+    protected virtual Task CommitChunkAsync(DbContextScope scope, CancellationToken cancelToken)
+        => scope.CommitAsync(cancelToken);
 
     protected virtual Task<int> DeleteSystemMappingsAsync(IQueryable<CustomerRoleMapping> query, CancellationToken cancelToken)
     {

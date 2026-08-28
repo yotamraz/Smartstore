@@ -12,11 +12,11 @@ Validates:
 import os
 import re
 import subprocess
-import pytest
 
+_THIS_FILE = os.path.abspath(__file__)
 WORKSPACE_DIR = os.environ.get(
     "WORKSPACE_DIR",
-    "C:/Users/yotam/.local/share/modelcode/workspace/jobs/e64e0c56-f945-403a-bc76-8357d523610a/workspace",
+    os.path.normpath(os.path.join(_THIS_FILE, "..", "..", "..", "..", "..")),
 )
 SMARTSTORE_DIR = os.path.join(WORKSPACE_DIR, "Smartstore")
 TEST_PROJECT = os.path.join(
@@ -43,6 +43,21 @@ TEST_FILE = os.path.join(
     "Rules",
     "TargetGroupEvaluatorTaskTests.cs",
 )
+
+EXPECTED_TEST_METHODS = [
+    "Run_WithoutCustomerRoleIds_DeletesAllSystemMappings",
+    "Run_WithCustomerRoleIds_DeletesOnlyMatchingSystemMappings",
+    "Run_OnlyProcessesActiveRolesWithActiveRuleSets",
+    "Run_EvaluatesEachActiveRuleSetViaRuleServiceAndTargetGroupService",
+    "Run_CollectsCustomerIdsViaFastPagerAndAccumulatesPerRole",
+    "Run_InsertsCustomerRoleMappingsInChunksOf500WithCommitAfterEach",
+    "Run_DetachesCustomerRoleMappingEntitiesAfterProcessingRole",
+    "Run_ClearsAclCacheWhenSystemMappingsDeleted",
+    "Run_ClearsAclCacheWhenNewMappingsAdded",
+    "Run_SkipsCacheInvalidationWhenNoMappingsChange",
+    "Run_RespectsCancellationInRuleSetLoop",
+    "Run_RespectsCancellationInChunkInsertionLoop",
+]
 
 # Dotnet path
 SYSTEM_DOTNET = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "dotnet")
@@ -157,21 +172,7 @@ class TestTargetGroupEvaluatorTests:
             f"STDERR: {result.stderr[-2000:]}"
         )
         # Check for specific test names
-        expected_tests = [
-            "Run_WithoutCustomerRoleIds_DeletesAllSystemMappings",
-            "Run_WithCustomerRoleIds_DeletesOnlyMatchingSystemMappings",
-            "Run_OnlyProcessesActiveRolesWithActiveRuleSets",
-            "Run_EvaluatesEachActiveRuleSetViaRuleServiceAndTargetGroupService",
-            "Run_CollectsCustomerIdsViaFastPagerAndAccumulatesPerRole",
-            "Run_InsertsCustomerRoleMappingsInChunksOf500WithCommitAfterEach",
-            "Run_DetachesCustomerRoleMappingEntitiesAfterProcessingRole",
-            "Run_ClearsAclCacheWhenSystemMappingsDeleted",
-            "Run_ClearsAclCacheWhenNewMappingsAdded",
-            "Run_SkipsCacheInvalidationWhenNoMappingsChange",
-            "Run_RespectsCancellationInRuleSetLoop",
-            "Run_RespectsCancellationInChunkInsertionLoop",
-        ]
-        for test_name in expected_tests:
+        for test_name in EXPECTED_TEST_METHODS:
             assert test_name in result.stdout, (
                 f"Test '{test_name}' not found in discoverable tests.\n"
                 f"STDOUT: {result.stdout[-2000:]}"
@@ -232,15 +233,6 @@ class TestTypeRegistration:
 
     def test_scheduler_module_registers_task(self):
         """Verify TargetGroupEvaluatorTask is used in SchedulerModule or InvariantSeedData."""
-        # Search for registration in InvariantSeedData
-        seed_data_path = os.path.join(
-            SMARTSTORE_DIR,
-            "src",
-            "Smartstore.Core",
-            "Data",
-            "Bootstrapping",
-            "InvariantSeedData.TaskDescriptors.cs",
-        )
         found = False
         # Check InvariantSeedData files
         search_dirs = [
@@ -280,21 +272,7 @@ class TestTestFileIntegrity:
         """Verify the test file contains all 12 expected test methods."""
         with open(TEST_FILE, "r", encoding="utf-8") as f:
             content = f.read()
-        expected_tests = [
-            "Run_WithoutCustomerRoleIds_DeletesAllSystemMappings",
-            "Run_WithCustomerRoleIds_DeletesOnlyMatchingSystemMappings",
-            "Run_OnlyProcessesActiveRolesWithActiveRuleSets",
-            "Run_EvaluatesEachActiveRuleSetViaRuleServiceAndTargetGroupService",
-            "Run_CollectsCustomerIdsViaFastPagerAndAccumulatesPerRole",
-            "Run_InsertsCustomerRoleMappingsInChunksOf500WithCommitAfterEach",
-            "Run_DetachesCustomerRoleMappingEntitiesAfterProcessingRole",
-            "Run_ClearsAclCacheWhenSystemMappingsDeleted",
-            "Run_ClearsAclCacheWhenNewMappingsAdded",
-            "Run_SkipsCacheInvalidationWhenNoMappingsChange",
-            "Run_RespectsCancellationInRuleSetLoop",
-            "Run_RespectsCancellationInChunkInsertionLoop",
-        ]
-        for test_name in expected_tests:
+        for test_name in EXPECTED_TEST_METHODS:
             assert test_name in content, (
                 f"Test method '{test_name}' not found in test file"
             )
