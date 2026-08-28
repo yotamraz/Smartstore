@@ -24,9 +24,10 @@ using Smartstore.Threading;
 namespace Smartstore.Core.Tests.Platform.Identity.Rules;
 
 /// <summary>
-/// Testable subclass of <see cref="TargetGroupEvaluatorTask"/> that replaces the
-/// <c>ExecuteDeleteAsync</c> call (unsupported by the InMemory provider) with an
-/// equivalent manual removal, while preserving all other production behavior.
+/// Testable subclass that overrides only the <c>DeleteSystemMappingsAsync</c> method
+/// (which calls <c>ExecuteDeleteAsync</c>, unsupported by the InMemory provider)
+/// with an equivalent manual removal. All other production behavior in <c>Run</c>
+/// is exercised exactly as written.
 /// </summary>
 internal sealed class TestableTargetGroupEvaluatorTask(
     SmartDbContext db,
@@ -35,118 +36,19 @@ internal sealed class TestableTargetGroupEvaluatorTask(
     IRuleProviderFactory ruleProviderFactory)
     : TargetGroupEvaluatorTask(db, cache, ruleService, ruleProviderFactory)
 {
-    /// <summary>
-    /// Records how many mappings were deleted, for test assertions.
-    /// </summary>
     public int LastDeletedCount { get; private set; }
 
-    /// <summary>
-    /// Records which role IDs were used for filtering the delete, if any.
-    /// </summary>
-    public int[] LastDeleteFilterRoleIds { get; private set; }
-
-    public new async Task Run(TaskExecutionContext ctx, CancellationToken cancelToken = default)
+    protected override async Task<int> DeleteSystemMappingsAsync(IQueryable<CustomerRoleMapping> query, CancellationToken cancelToken)
     {
-        var count = 0;
-        var numDeleted = 0;
-        var numAdded = 0;
-        var rolesCount = 0;
-
-        using (var scope = new DbContextScope(_db, autoDetectChanges: false, minHookImportance: HookImportance.Important, deferCommit: true))
+        var toDelete = await query.ToListAsync(cancelToken);
+        _db.CustomerRoleMappings.RemoveRange(toDelete);
+        if (toDelete.Count > 0)
         {
-            // Delete existing system mappings using InMemory-compatible approach.
-            IQueryable<CustomerRoleMapping> deleteQuery = _db.CustomerRoleMappings.Where(x => x.IsSystemMapping);
-
-            if (ctx.Parameters.ContainsKey("CustomerRoleIds"))
-            {
-                var roleIds = ctx.Parameters["CustomerRoleIds"].ToIntArray();
-                LastDeleteFilterRoleIds = roleIds;
-                deleteQuery = deleteQuery.Where(x => roleIds.Contains(x.CustomerRoleId));
-            }
-
-            // Replace ExecuteDeleteAsync with manual removal for InMemory compatibility.
-            var toDelete = await deleteQuery.ToListAsync(cancelToken);
-            _db.CustomerRoleMappings.RemoveRange(toDelete);
-            numDeleted = toDelete.Count;
-            LastDeletedCount = numDeleted;
-            if (numDeleted > 0)
-            {
-                await _db.SaveChangesAsync(cancelToken);
-            }
-
-            // Insert new customer role mappings.
-            var roles = await _db.CustomerRoles
-                .Include(x => x.RuleSets)
-                .ThenInclude(x => x.Rules)
-                .AsNoTracking()
-                .AsSplitQuery()
-                .Where(x => x.Active && x.RuleSets.Any(y => y.IsActive))
-                .ToListAsync(cancelToken);
-            rolesCount = roles.Count;
-
-            foreach (var role in roles)
-            {
-                var ruleSetCustomerIds = new HashSet<int>();
-
-                await ctx.SetProgressAsync(++count, roles.Count, $"Add customer assignments for role \"{role.SystemName.NaIfEmpty()}\".");
-
-                // Execute active rule sets and collect customer ids.
-                foreach (var ruleSet in role.RuleSets.Where(x => x.IsActive))
-                {
-                    if (cancelToken.IsCancellationRequested)
-                        return;
-
-                    var expressionGroup = await _ruleService.CreateExpressionGroupAsync(ruleSet, _targetGroupService);
-                    if (expressionGroup is FilterExpression expression)
-                    {
-                        var filterResult = _targetGroupService.ProcessFilter(expression, 0, 500);
-                        var resultPager = new FastPager<Customer>(filterResult.SourceQuery, 500);
-
-                        while ((await resultPager.ReadNextPageAsync(x => x.Id, x => x, cancelToken)).Out(out var customerIds))
-                        {
-                            ruleSetCustomerIds.AddRange(customerIds);
-                        }
-                    }
-                }
-
-                // Add mappings.
-                if (ruleSetCustomerIds.Any())
-                {
-                    foreach (var chunk in ruleSetCustomerIds.Chunk(500))
-                    {
-                        if (cancelToken.IsCancellationRequested)
-                            return;
-
-                        foreach (var customerId in chunk)
-                        {
-                            _db.CustomerRoleMappings.Add(new CustomerRoleMapping
-                            {
-                                CustomerId = customerId,
-                                CustomerRoleId = role.Id,
-                                IsSystemMapping = true
-                            });
-
-                            ++numAdded;
-                        }
-
-                        await scope.CommitAsync(cancelToken);
-                    }
-
-                    try
-                    {
-                        scope.DbContext.DetachEntities<CustomerRoleMapping>();
-                    }
-                    catch
-                    {
-                    }
-                }
-            }
+            await _db.SaveChangesAsync(cancelToken);
         }
 
-        if (numAdded > 0 || numDeleted > 0)
-        {
-            await _cache.RemoveByPatternAsync(AclService.ACL_SEGMENT_PATTERN);
-        }
+        LastDeletedCount = toDelete.Count;
+        return toDelete.Count;
     }
 }
 
@@ -367,7 +269,6 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
         Assert.That(remainingMappings[0].IsSystemMapping, Is.False);
         Assert.That(remainingMappings[0].CustomerId, Is.EqualTo(4));
         Assert.That(_task.LastDeletedCount, Is.EqualTo(3));
-        Assert.That(_task.LastDeleteFilterRoleIds, Is.Null);
     }
 
     #endregion
@@ -396,7 +297,6 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
         Assert.That(remainingMappings.Any(m => m.IsSystemMapping && m.CustomerRoleId == 30), Is.True);
         Assert.That(remainingMappings.Any(m => !m.IsSystemMapping && m.CustomerRoleId == 10), Is.True);
         Assert.That(_task.LastDeletedCount, Is.EqualTo(2));
-        Assert.That(_task.LastDeleteFilterRoleIds, Is.EqualTo(new[] { 10, 20 }));
     }
 
     #endregion
