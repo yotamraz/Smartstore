@@ -53,7 +53,7 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
         var result = await _ruleService.CreateExpressionGroupAsync(ruleSetId, this) as FilterExpressionGroup;
 
         Logger.Debug("CreateExpressionGroupAsync for RuleSetId={RuleSetId} returned {ExpressionCount} expressions",
-            ruleSetId, result?.Expressions?.Count ?? 0);
+            ruleSetId, result?.Expressions?.Count() ?? 0);
 
         return result;
     }
@@ -146,7 +146,7 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
             .OrderByDescending(c => c.CreatedOnUtc);
 
         Logger.Debug("ProcessFilter query composed with {ExpressionCount} expressions in group {GroupId}",
-            group.Expressions.Count, group.Id);
+            group.Expressions.Count(), group.Id);
 
         return query.ToPagedList(pageIndex, pageSize);
     }

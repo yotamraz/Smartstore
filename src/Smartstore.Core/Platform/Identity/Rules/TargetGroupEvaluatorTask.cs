@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Smartstore.Caching;
 using Smartstore.Core.Data;
 using Smartstore.Core.Rules;
@@ -7,6 +8,8 @@ using Smartstore.Data;
 using Smartstore.Data.Hooks;
 using Smartstore.Scheduling;
 using Smartstore.Utilities;
+
+using MsLogLevel = Microsoft.Extensions.Logging.LogLevel;
 
 namespace Smartstore.Core.Identity.Rules;
 
@@ -18,42 +21,42 @@ public partial class TargetGroupEvaluatorTask(
 {
     private static readonly Action<ILogger, int[], bool, Exception> _logRunStarted =
         LoggerMessage.Define<int[], bool>(
-            LogLevel.Debug, 0,
+            MsLogLevel.Debug, 0,
             "TargetGroupEvaluatorTask.Run started. CustomerRoleIds={CustomerRoleIds}, CancellationRequested={CancellationRequested}");
 
     private static readonly Action<ILogger, int, bool, Exception> _logBulkDeleted =
         LoggerMessage.Define<int, bool>(
-            LogLevel.Debug, 0,
+            MsLogLevel.Debug, 0,
             "Deleted {NumDeleted} system mappings. ScopedToRoleIds={ScopedToRoleIds}");
 
     private static readonly Action<ILogger, int, string, int, Exception> _logProcessingRole =
         LoggerMessage.Define<int, string, int>(
-            LogLevel.Debug, 0,
+            MsLogLevel.Debug, 0,
             "Processing role {RoleId} \"{RoleName}\" with {RuleSetCount} active rule sets");
 
     private static readonly Action<ILogger, int, string, int, Exception> _logRuleEvaluationResult =
         LoggerMessage.Define<int, string, int>(
-            LogLevel.Debug, 0,
+            MsLogLevel.Debug, 0,
             "Rule set {RuleSetId} evaluated: ExpressionType={ExpressionType}, MatchingCustomerIds={MatchingCustomerCount}");
 
     private static readonly Action<ILogger, int, int, int, Exception> _logChunkInserted =
         LoggerMessage.Define<int, int, int>(
-            LogLevel.Debug, 0,
+            MsLogLevel.Debug, 0,
             "Inserted chunk {ChunkIndex}: {ChunkSize} mappings ({TotalInserted} total so far)");
 
     private static readonly Action<ILogger, int, string, Exception> _logEntityDetachment =
         LoggerMessage.Define<int, string>(
-            LogLevel.Debug, 0,
+            MsLogLevel.Debug, 0,
             "Detached CustomerRoleMapping entities for role {RoleId} \"{RoleName}\"");
 
     private static readonly Action<ILogger, bool, string, Exception> _logCacheInvalidation =
         LoggerMessage.Define<bool, string>(
-            LogLevel.Debug, 0,
+            MsLogLevel.Debug, 0,
             "Cache invalidation: Cleared={Cleared}, Reason={Reason}");
 
     private static readonly Action<ILogger, int, int, int, long, Exception> _logRunCompleted =
         LoggerMessage.Define<int, int, int, long>(
-            LogLevel.Debug, 0,
+            MsLogLevel.Debug, 0,
             "TargetGroupEvaluatorTask.Run completed. RolesProcessed={RolesProcessed}, MappingsCreated={MappingsCreated}, MappingsDeleted={MappingsDeleted}, ElapsedMs={ElapsedMs}");
 
     protected readonly SmartDbContext _db = db;
