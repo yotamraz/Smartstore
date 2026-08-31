@@ -19,141 +19,104 @@ import { test, expect } from "@playwright/test";
  *    by QA report — both showed identical pages with 18 external JS scripts).
  */
 
-// Collect JS errors during page navigation
 function collectJsErrors(page: import("@playwright/test").Page): string[] {
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(err.message));
   return errors;
 }
 
+async function checkSmartstoreNamespace(
+  page: import("@playwright/test").Page
+): Promise<boolean> {
+  return page.evaluate(
+    () => typeof (window as unknown as Record<string, unknown>).Smartstore !== "undefined"
+  );
+}
+
 test.describe("JS Bundle Integrity — NUglify Migration (Milestone 3)", () => {
-  test("admin dashboard: Smartstore global namespace is initialized", async ({
-    page,
-  }) => {
-    const jsErrors = collectJsErrors(page);
 
-    await page.goto("/admin/");
-    await page.waitForLoadState("networkidle");
+  test.describe("admin dashboard", () => {
+    let jsErrors: string[];
+    test.beforeEach(async ({ page }) => {
+      jsErrors = collectJsErrors(page);
+      await page.goto("/admin/");
+      await page.waitForLoadState("networkidle");
+    });
 
-    // Verify the Smartstore global namespace was created by the core JS bundle.
-    // If NUglify corrupted the bundle this object would be undefined.
-    const smartstoreExists = await page.evaluate(
-      () => typeof (window as unknown as Record<string, unknown>).Smartstore !== "undefined"
-    );
-    expect(smartstoreExists).toBe(true);
+    test("Smartstore global namespace is initialized", async ({ page }) => {
+      const smartstoreExists = await checkSmartstoreNamespace(page);
+      expect(smartstoreExists).toBe(true);
+      expect(jsErrors).toHaveLength(0);
+    });
 
-    // No uncaught errors after full load
-    expect(jsErrors).toHaveLength(0);
+    test("no uncaught JavaScript errors on load", async () => {
+      expect(jsErrors).toHaveLength(0);
+    });
   });
 
-  test("admin dashboard: no uncaught JavaScript errors on load", async ({
-    page,
-  }) => {
-    const jsErrors = collectJsErrors(page);
+  test.describe("customer roles list", () => {
+    let jsErrors: string[];
+    test.beforeEach(async ({ page }) => {
+      jsErrors = collectJsErrors(page);
+      await page.goto("/admin/customerrole/list/");
+      await page.waitForLoadState("networkidle");
+      await page.locator(".dg-table-wrapper").waitFor({ timeout: 20000 });
+    });
 
-    await page.goto("/admin/");
-    await page.waitForLoadState("networkidle");
+    test("no uncaught JavaScript errors on load", async () => {
+      expect(jsErrors).toHaveLength(0);
+    });
 
-    // Any entry here means a script threw an uncaught exception — a sign
-    // that NUglify produced malformed output.
-    expect(jsErrors).toHaveLength(0);
+    test("Smartstore global namespace is initialized", async ({ page }) => {
+      const smartstoreExists = await checkSmartstoreNamespace(page);
+      expect(smartstoreExists).toBe(true);
+      expect(jsErrors).toHaveLength(0);
+    });
   });
 
-  test("customer roles list: no uncaught JavaScript errors on load", async ({
-    page,
-  }) => {
-    const jsErrors = collectJsErrors(page);
+  test.describe("customer role create form", () => {
+    let jsErrors: string[];
+    test.beforeEach(async ({ page }) => {
+      jsErrors = collectJsErrors(page);
+      await page.goto("/admin/customerrole/create/");
+      await page.waitForLoadState("networkidle");
+    });
 
-    await page.goto("/admin/customerrole/list/");
-    await page.waitForLoadState("networkidle");
+    test("no uncaught JavaScript errors on load", async () => {
+      expect(jsErrors).toHaveLength(0);
+    });
 
-    // Wait for the async data grid to populate before checking errors
-    await page.locator(".dg-table-wrapper").waitFor({ timeout: 20000 });
+    test("form fields rendered by JS are present", async ({ page }) => {
+      await expect(page.locator("input#Name")).toBeVisible();
 
-    expect(jsErrors).toHaveLength(0);
+      await expect(
+        page.locator("button.btn-primary, button.btn-warning").filter({ hasText: "Save" }).first()
+      ).toBeVisible();
+
+      await expect(page.getByRole("tab", { name: /General/i })).toBeVisible();
+
+      expect(jsErrors).toHaveLength(0);
+    });
   });
 
-  test("customer role create form: no uncaught JavaScript errors on load", async ({
-    page,
-  }) => {
-    const jsErrors = collectJsErrors(page);
+  test.describe("scheduled tasks list", () => {
+    let jsErrors: string[];
+    test.beforeEach(async ({ page }) => {
+      jsErrors = collectJsErrors(page);
+      await page.goto("/admin/scheduling/list/");
+      await page.waitForLoadState("networkidle");
+      await page.locator(".dg-tr").first().waitFor({ timeout: 20000 });
+    });
 
-    // QA report: create form is at /admin/customerrole/create/
-    await page.goto("/admin/customerrole/create/");
-    await page.waitForLoadState("networkidle");
+    test("no uncaught JavaScript errors on load", async () => {
+      expect(jsErrors).toHaveLength(0);
+    });
 
-    expect(jsErrors).toHaveLength(0);
+    test("Smartstore global namespace is initialized", async ({ page }) => {
+      const smartstoreExists = await checkSmartstoreNamespace(page);
+      expect(smartstoreExists).toBe(true);
+      expect(jsErrors).toHaveLength(0);
+    });
   });
 
-  test("customer role create form: form fields rendered by JS are present", async ({
-    page,
-  }) => {
-    const jsErrors = collectJsErrors(page);
-
-    await page.goto("/admin/customerrole/create/");
-    await page.waitForLoadState("networkidle");
-
-    // QA report confirmed: Name field, Active toggle, tabs (General, Access
-    // control list, Customers), Save button — all rendered after JS execution.
-    // If NUglify broke the bundle these elements would not initialise.
-    await expect(page.locator("input#Name")).toBeVisible();
-
-    // Save button — the create form uses btn-primary, the edit form uses
-    // btn-warning; either class confirms JS rendered the form controls.
-    await expect(
-      page.locator("button.btn-primary, button.btn-warning").filter({ hasText: "Save" }).first()
-    ).toBeVisible();
-
-    // Tabs rendered by JS
-    await expect(page.getByRole("tab", { name: /General/i })).toBeVisible();
-
-    expect(jsErrors).toHaveLength(0);
-  });
-
-  test("customer roles list: Smartstore global namespace is initialized", async ({
-    page,
-  }) => {
-    const jsErrors = collectJsErrors(page);
-
-    await page.goto("/admin/customerrole/list/");
-    await page.waitForLoadState("networkidle");
-
-    // If NUglify produced a broken bundle this would fail
-    const smartstoreExists = await page.evaluate(
-      () => typeof (window as unknown as Record<string, unknown>).Smartstore !== "undefined"
-    );
-    expect(smartstoreExists).toBe(true);
-
-    expect(jsErrors).toHaveLength(0);
-  });
-
-  test("scheduled tasks list: no uncaught JavaScript errors on load", async ({
-    page,
-  }) => {
-    const jsErrors = collectJsErrors(page);
-
-    await page.goto("/admin/scheduling/list/");
-    await page.waitForLoadState("networkidle");
-
-    // Wait for grid to render before checking for errors
-    await page.locator(".dg-tr").first().waitFor({ timeout: 20000 });
-
-    expect(jsErrors).toHaveLength(0);
-  });
-
-  test("scheduled tasks list: Smartstore global namespace is initialized", async ({
-    page,
-  }) => {
-    const jsErrors = collectJsErrors(page);
-
-    await page.goto("/admin/scheduling/list/");
-    await page.waitForLoadState("networkidle");
-
-    const smartstoreExists = await page.evaluate(
-      () => typeof (window as unknown as Record<string, unknown>).Smartstore !== "undefined"
-    );
-    expect(smartstoreExists).toBe(true);
-
-    expect(jsErrors).toHaveLength(0);
-  });
 });
