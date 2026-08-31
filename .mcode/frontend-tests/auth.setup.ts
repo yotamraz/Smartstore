@@ -1,6 +1,5 @@
 import { test as setup, expect } from "@playwright/test";
 import path from "path";
-import fs from "fs";
 
 // Storage state file for reuse across tests
 export const STORAGE_STATE = path.join(__dirname, "storageState.json");
