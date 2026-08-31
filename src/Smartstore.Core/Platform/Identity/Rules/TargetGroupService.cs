@@ -41,12 +41,21 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
         _primaryCurrency = currencyService.PrimaryCurrency;
     }
 
+    public ILogger Logger { get; set; } = NullLogger.Instance;
+
     public Localizer T { get; set; } = NullLocalizer.Instance;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public async Task<FilterExpressionGroup> CreateExpressionGroupAsync(int ruleSetId)
     {
-        return await _ruleService.CreateExpressionGroupAsync(ruleSetId, this) as FilterExpressionGroup;
+        Logger.Debug("CreateExpressionGroupAsync invoked for RuleSetId={RuleSetId}", ruleSetId);
+
+        var result = await _ruleService.CreateExpressionGroupAsync(ruleSetId, this) as FilterExpressionGroup;
+
+        Logger.Debug("CreateExpressionGroupAsync for RuleSetId={RuleSetId} returned {ExpressionCount} expressions",
+            ruleSetId, result?.Expressions?.Count ?? 0);
+
+        return result;
     }
 
     public override async Task<IRuleExpression> VisitRuleAsync(RuleEntity rule)
@@ -81,11 +90,17 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
     {
         Guard.NotNull(ruleSetIds, nameof(ruleSetIds));
 
+        Logger.Debug("ProcessFilterAsync called with {RuleSetCount} rule sets, Operator={LogicalOperator}, PageIndex={PageIndex}, PageSize={PageSize}",
+            ruleSetIds.Length, logicalOperator, pageIndex, pageSize);
+
         var filters = await ruleSetIds
             .SelectAwait(id => _ruleService.CreateExpressionGroupAsync(id, this))
             .Where(x => x != null)
             .Cast<FilterExpression>()
             .ToArrayAsync();
+
+        Logger.Debug("ProcessFilterAsync resolved {FilterCount} filter expressions from {RuleSetCount} rule sets",
+            filters.Length, ruleSetIds.Length);
 
         return ProcessFilter(filters, logicalOperator, pageIndex, pageSize);
     }
@@ -100,8 +115,12 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
 
         if (filters.Length == 0)
         {
+            Logger.Debug("ProcessFilter called with 0 filters, returning empty result");
             return Array.Empty<Customer>().ToPagedList(0, int.MaxValue);
         }
+
+        Logger.Debug("ProcessFilter composing customer query with {FilterCount} filters, Operator={LogicalOperator}",
+            filters.Length, logicalOperator);
 
         var query = _db.Customers.AsNoTracking().Where(x => !x.IsSystemAccount);
 
@@ -125,6 +144,9 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
             .Where(predicate)
             .Cast<Customer>()
             .OrderByDescending(c => c.CreatedOnUtc);
+
+        Logger.Debug("ProcessFilter query composed with {ExpressionCount} expressions in group {GroupId}",
+            group.Expressions.Count, group.Id);
 
         return query.ToPagedList(pageIndex, pageSize);
     }
