@@ -124,10 +124,14 @@ public partial class DbTaskStore : Disposable, ITaskStore
         Guard.NotNull(type);
         Guard.IsAssignableFrom<ITask>(type);
 
+        var typeName = type.GetAttribute<TaskNameAttribute>(false)?.Name ?? type.Name;
+
+        Logger.Debug("Creating task descriptor Name={TaskName}, Type={TaskType}", name, typeName);
+
         return new TaskDescriptor
         {
             Name = name,
-            Type = type.GetAttribute<TaskNameAttribute>(false)?.Name ?? type.Name,
+            Type = typeName,
             Enabled = true
         };
     }
@@ -148,7 +152,18 @@ public partial class DbTaskStore : Disposable, ITaskStore
         {
             if (type.HasValue())
             {
-                var query = _legacyTypeNamesMap.TryGetValue(type, out var legacyTypeName)
+                var hasLegacyMapping = _legacyTypeNamesMap.TryGetValue(type, out var legacyTypeName);
+
+                if (hasLegacyMapping)
+                {
+                    Logger.Debug("Resolving task type {TaskType} with legacy mapping {LegacyTypeName}", type, legacyTypeName);
+                }
+                else
+                {
+                    Logger.Debug("Resolving task type {TaskType} (no legacy mapping)", type);
+                }
+
+                var query = hasLegacyMapping
                     ? Db.TaskDescriptors.Where(t => t.Type == type || t.Type == legacyTypeName)
                     : Db.TaskDescriptors.Where(t => t.Type == type);
 
@@ -156,12 +171,14 @@ public partial class DbTaskStore : Disposable, ITaskStore
                     .OrderByDescending(t => t.Id)
                     .FirstOrDefaultAsync();
 
+                Logger.Debug("GetTaskByTypeAsync for {TaskType}: Found={Found}", type, task != null);
+
                 return task;
             }
         }
         catch (Exception ex)
         {
-            // Do not throw an exception if the underlying provider failed on Open.
+            Logger.Debug(ex, "GetTaskByTypeAsync failed for type {TaskType}", type);
             ex.Dump();
         }
 
@@ -275,6 +292,8 @@ public partial class DbTaskStore : Disposable, ITaskStore
     {
         Guard.NotNull(task);
 
+        Logger.Debug("Inserting task descriptor Name={TaskName}, Type={TaskType}", task.Name, task.Type);
+
         Db.TaskDescriptors.Add(task);
         return Db.SaveChangesAsync();
     }
@@ -282,6 +301,8 @@ public partial class DbTaskStore : Disposable, ITaskStore
     public virtual Task UpdateTaskAsync(TaskDescriptor task)
     {
         Guard.NotNull(task);
+
+        Logger.Debug("Updating task descriptor Id={TaskId}, Name={TaskName}, Enabled={Enabled}", task.Id, task.Name, task.Enabled);
 
         try
         {
@@ -298,6 +319,8 @@ public partial class DbTaskStore : Disposable, ITaskStore
     public virtual Task DeleteTaskAsync(TaskDescriptor task)
     {
         Guard.NotNull(task);
+
+        Logger.Debug("Deleting task descriptor Id={TaskId}, Name={TaskName}", task.Id, task.Name);
 
         Db.TaskDescriptors.Remove(task);
         return Db.SaveChangesAsync();
@@ -326,6 +349,12 @@ public partial class DbTaskStore : Disposable, ITaskStore
             createAction(task);
             Db.TaskDescriptors.Add(task);
             await Db.SaveChangesAsync();
+
+            Logger.Debug("GetOrAddTaskAsync created new task descriptor Type={TaskType}, Name={TaskName}", task.Type, task.Name);
+        }
+        else
+        {
+            Logger.Debug("GetOrAddTaskAsync found existing task descriptor Id={TaskId}, Type={TaskType}", task.Id, task.Type);
         }
 
         return task;
@@ -421,6 +450,8 @@ public partial class DbTaskStore : Disposable, ITaskStore
     {
         Guard.NotNull(task);
 
+        Logger.Debug("Creating execution info for task Id={TaskId}, Name={TaskName}", task.Id, task.Name);
+
         return new TaskExecutionInfo
         {
             TaskDescriptorId = task.Id,
@@ -496,6 +527,9 @@ public partial class DbTaskStore : Disposable, ITaskStore
     public virtual async Task UpdateExecutionInfoAsync(TaskExecutionInfo info)
     {
         Guard.NotNull(info);
+
+        Logger.Debug("Updating execution info Id={InfoId}, TaskId={TaskId}, IsRunning={IsRunning}",
+            info.Id, info.TaskDescriptorId, info.IsRunning);
 
         try
         {
@@ -599,6 +633,9 @@ public partial class DbTaskStore : Disposable, ITaskStore
     {
         Guard.NotNull(info);
 
+        Logger.Debug("Finalizing execution info Id={InfoId}, TaskId={TaskId}, HasError={HasError}, FinishedOnUtc={FinishedOnUtc}",
+            info.Id, info.TaskDescriptorId, info.Error != null, info.FinishedOnUtc);
+
         try
         {
             // Uses ExecuteUpdateAsync to bypass the EF change tracker entirely,
@@ -612,6 +649,8 @@ public partial class DbTaskStore : Disposable, ITaskStore
                     .SetProperty(x => x.Error, info.Error)
                     .SetProperty(x => x.FinishedOnUtc, info.FinishedOnUtc)
                     .SetProperty(x => x.SucceededOnUtc, info.SucceededOnUtc));
+
+            Logger.Debug("FinalizeExecutionInfoAsync for Id={InfoId}: RowsAffected={Affected}", info.Id, affected);
 
             return affected > 0;
         }
