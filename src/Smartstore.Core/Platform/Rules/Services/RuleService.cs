@@ -22,6 +22,8 @@ public partial class RuleService : IRuleService
         _ruleOptionsProviders = ruleOptionsProviders;
     }
 
+    public ILogger Logger { get; set; } = NullLogger.Instance;
+
     public Localizer T { get; set; } = NullLocalizer.Instance;
 
     public virtual async Task<bool> ApplyRuleSetMappingsAsync<T>(T entity, int[] selectedRuleSetIds)
@@ -72,6 +74,9 @@ public partial class RuleService : IRuleService
             return null;
         }
 
+        Logger.Debug("Loading rule set {RuleSetId} for expression group (Scope={Scope}, IncludeHidden={IncludeHidden})",
+            ruleSetId, visitor.Scope, includeHidden);
+
         // TODO: prevent stack overflow > check if nested groups reference each other.
 
         var ruleSet = await _db.RuleSets
@@ -81,9 +86,13 @@ public partial class RuleService : IRuleService
 
         if (ruleSet == null)
         {
+            Logger.Debug("Rule set {RuleSetId} not found", ruleSetId);
             // TODO: ErrHandling (???)
             return null;
         }
+
+        Logger.Debug("Rule set {RuleSetId} loaded with {RuleCount} rules, IsActive={IsActive}",
+            ruleSetId, ruleSet.Rules.Count, ruleSet.IsActive);
 
         return await CreateExpressionGroupAsync(ruleSet, visitor, includeHidden);
     }
@@ -97,6 +106,7 @@ public partial class RuleService : IRuleService
 
         if (!includeHidden && !ruleSet.IsActive)
         {
+            Logger.Debug("Skipping inactive rule set {RuleSetId}", ruleSet.Id);
             return null;
         }
 
@@ -110,6 +120,9 @@ public partial class RuleService : IRuleService
             .ToArrayAsync();
 
         group.AddExpressions(expressions);
+
+        Logger.Debug("Built expression group for rule set {RuleSetId}: {ExpressionCount} expressions, Operator={LogicalOperator}",
+            ruleSet.Id, expressions.Length, ruleSet.LogicalOperator);
 
         return group;
     }
@@ -243,10 +256,16 @@ public partial class RuleService : IRuleService
     {
         if (!ruleEntity.IsGroup)
         {
+            Logger.Debug("Visiting rule {RuleId}: Type={RuleType}, Operator={Operator}",
+                ruleEntity.Id, ruleEntity.RuleType, ruleEntity.Operator);
+
             return await visitor.VisitRuleAsync(ruleEntity);
         }
 
         // It's a group, do recursive call.
+        Logger.Debug("Visiting sub-group rule {RuleId}, target RuleSetId={SubGroupRuleSetId}",
+            ruleEntity.Id, ruleEntity.Value);
+
         var group = await CreateExpressionGroupAsync(ruleEntity.Value.Convert<int>(), visitor);
         if (group != null)
         {
