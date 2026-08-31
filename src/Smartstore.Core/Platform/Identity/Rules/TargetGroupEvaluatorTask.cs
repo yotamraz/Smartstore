@@ -1,4 +1,3 @@
-﻿using System.Diagnostics;
 using Smartstore.Caching;
 using Smartstore.Core.Data;
 using Smartstore.Core.Rules;
@@ -17,32 +16,79 @@ public partial class TargetGroupEvaluatorTask(
     IRuleService ruleService,
     IRuleProviderFactory ruleProviderFactory) : ITask
 {
+    private static readonly Action<ILogger, int[], bool, Exception> _logRunStarted =
+        LoggerMessage.Define<int[], bool>(
+            LogLevel.Debug, 0,
+            "TargetGroupEvaluatorTask.Run started. CustomerRoleIds={CustomerRoleIds}, CancellationRequested={CancellationRequested}");
+
+    private static readonly Action<ILogger, int, bool, Exception> _logBulkDeleted =
+        LoggerMessage.Define<int, bool>(
+            LogLevel.Debug, 0,
+            "Deleted {NumDeleted} system mappings. ScopedToRoleIds={ScopedToRoleIds}");
+
+    private static readonly Action<ILogger, int, string, int, Exception> _logProcessingRole =
+        LoggerMessage.Define<int, string, int>(
+            LogLevel.Debug, 0,
+            "Processing role {RoleId} \"{RoleName}\" with {RuleSetCount} active rule sets");
+
+    private static readonly Action<ILogger, int, string, int, Exception> _logRuleEvaluationResult =
+        LoggerMessage.Define<int, string, int>(
+            LogLevel.Debug, 0,
+            "Rule set {RuleSetId} evaluated: ExpressionType={ExpressionType}, MatchingCustomerIds={MatchingCustomerCount}");
+
+    private static readonly Action<ILogger, int, int, int, Exception> _logChunkInserted =
+        LoggerMessage.Define<int, int, int>(
+            LogLevel.Debug, 0,
+            "Inserted chunk {ChunkIndex}: {ChunkSize} mappings ({TotalInserted} total so far)");
+
+    private static readonly Action<ILogger, int, string, Exception> _logEntityDetachment =
+        LoggerMessage.Define<int, string>(
+            LogLevel.Debug, 0,
+            "Detached CustomerRoleMapping entities for role {RoleId} \"{RoleName}\"");
+
+    private static readonly Action<ILogger, bool, string, Exception> _logCacheInvalidation =
+        LoggerMessage.Define<bool, string>(
+            LogLevel.Debug, 0,
+            "Cache invalidation: Cleared={Cleared}, Reason={Reason}");
+
+    private static readonly Action<ILogger, int, int, int, long, Exception> _logRunCompleted =
+        LoggerMessage.Define<int, int, int, long>(
+            LogLevel.Debug, 0,
+            "TargetGroupEvaluatorTask.Run completed. RolesProcessed={RolesProcessed}, MappingsCreated={MappingsCreated}, MappingsDeleted={MappingsDeleted}, ElapsedMs={ElapsedMs}");
+
     protected readonly SmartDbContext _db = db;
     protected readonly ICacheManager _cache = cache;
     protected readonly IRuleService _ruleService = ruleService;
     protected readonly ITargetGroupService _targetGroupService = ruleProviderFactory.GetProvider<ITargetGroupService>(RuleScope.Customer);
 
+    public ILogger Logger { get; set; } = NullLogger.Instance;
+
     public async Task Run(TaskExecutionContext ctx, CancellationToken cancelToken = default)
     {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var count = 0;
         var numDeleted = 0;
         var numAdded = 0;
         var rolesCount = 0;
 
+        var hasRoleFilter = ctx.Parameters.ContainsKey("CustomerRoleIds");
+        int[] roleIds = hasRoleFilter ? ctx.Parameters["CustomerRoleIds"].ToIntArray() : null;
+
+        _logRunStarted(Logger, roleIds, cancelToken.IsCancellationRequested, null);
+
         using (var scope = new DbContextScope(_db, autoDetectChanges: false, minHookImportance: HookImportance.Important, deferCommit: true))
         {
             // Delete existing system mappings.
             var deleteQuery = _db.CustomerRoleMappings.Where(x => x.IsSystemMapping);
-            var hasRoleFilter = ctx.Parameters.ContainsKey("CustomerRoleIds");
-            int[] roleIds = null;
 
             if (hasRoleFilter)
             {
-                roleIds = ctx.Parameters["CustomerRoleIds"].ToIntArray();
                 deleteQuery = deleteQuery.Where(x => roleIds.Contains(x.CustomerRoleId));
             }
 
             numDeleted = await deleteQuery.ExecuteDeleteAsync(cancelToken);
+
+            _logBulkDeleted(Logger, numDeleted, hasRoleFilter, null);
 
             // Insert new customer role mappings.
             var rolesQuery = _db.CustomerRoles
@@ -63,11 +109,14 @@ public partial class TargetGroupEvaluatorTask(
             foreach (var role in roles)
             {
                 var ruleSetCustomerIds = new HashSet<int>();
+                var activeRuleSets = role.RuleSets.Where(x => x.IsActive).ToList();
+
+                _logProcessingRole(Logger, role.Id, role.SystemName.NaIfEmpty(), activeRuleSets.Count, null);
 
                 await ctx.SetProgressAsync(++count, roles.Count, $"Add customer assignments for role \"{role.SystemName.NaIfEmpty()}\".");
 
                 // Execute active rule sets and collect customer ids.
-                foreach (var ruleSet in role.RuleSets.Where(x => x.IsActive))
+                foreach (var ruleSet in activeRuleSets)
                 {
                     if (cancelToken.IsCancellationRequested)
                         return;
@@ -83,11 +132,14 @@ public partial class TargetGroupEvaluatorTask(
                             ruleSetCustomerIds.AddRange(customerIds);
                         }
                     }
+
+                    _logRuleEvaluationResult(Logger, ruleSet.Id, expressionGroup?.GetType().Name ?? "null", ruleSetCustomerIds.Count, null);
                 }
 
                 // Add mappings.
                 if (ruleSetCustomerIds.Any())
                 {
+                    var chunkIndex = 0;
                     foreach (var chunk in ruleSetCustomerIds.Chunk(500))
                     {
                         if (cancelToken.IsCancellationRequested)
@@ -106,20 +158,35 @@ public partial class TargetGroupEvaluatorTask(
                         }
 
                         await scope.CommitAsync(cancelToken);
+
+                        _logChunkInserted(Logger, chunkIndex, chunk.Length, numAdded, null);
+                        chunkIndex++;
                     }
 
-                    CommonHelper.TryAction(
-                        () => scope.DbContext.DetachEntities<CustomerRoleMapping>(),
-                        ex => Debug.WriteLine($"DetachEntities failed for role \"{role.SystemName}\": {ex.Message}"));
+                    try
+                    {
+                        scope.DbContext.DetachEntities<CustomerRoleMapping>();
+                        _logEntityDetachment(Logger, role.Id, role.SystemName.NaIfEmpty(), null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug(ex, "DetachEntities failed for role {RoleId} \"{RoleName}\"", role.Id, role.SystemName);
+                    }
                 }
             }
         }
 
-        if (numAdded > 0 || numDeleted > 0)
+        var cacheCleared = numAdded > 0 || numDeleted > 0;
+        if (cacheCleared)
         {
             await _cache.RemoveByPatternAsync(AclService.ACL_SEGMENT_PATTERN);
         }
 
-        Debug.WriteLineIf(numDeleted > 0 || numAdded > 0, $"Deleted {numDeleted} and added {numAdded} customer assignments for {rolesCount} roles.");
+        _logCacheInvalidation(Logger, cacheCleared,
+            cacheCleared ? $"numAdded={numAdded}, numDeleted={numDeleted}" : "No changes",
+            null);
+
+        stopwatch.Stop();
+        _logRunCompleted(Logger, rolesCount, numAdded, numDeleted, stopwatch.ElapsedMilliseconds, null);
     }
 }
