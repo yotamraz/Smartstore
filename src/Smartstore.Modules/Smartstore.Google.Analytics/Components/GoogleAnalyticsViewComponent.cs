@@ -1,5 +1,5 @@
-﻿using DouglasCrockford.JsMin;
-using Microsoft.AspNetCore.Http;
+﻿using Microsoft.AspNetCore.Http;
+using NUglify;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
@@ -14,8 +14,6 @@ namespace Smartstore.Google.Analytics.Components;
 
 public class GoogleAnalyticsViewComponent : SmartViewComponent
 {
-    private static readonly JsMinifier Minifier = new();
-
     private readonly GoogleAnalyticsSettings _settings;
     private readonly ICookieConsentManager _cookieConsentManager;
     private readonly GoogleAnalyticsScriptHelper _googleAnalyticsScriptHelper;
@@ -169,7 +167,7 @@ public class GoogleAnalyticsViewComponent : SmartViewComponent
 
         if (_settings.MinifyScripts && rootScript.HasValue())
         {
-            rootScript = Minifier.Minify(rootScript);
+            rootScript = Uglify.Js(rootScript).Code;
         }
 
         var path = Url.Content("~/Modules/Smartstore.Google.Analytics/js/google-analytics.utils.js");

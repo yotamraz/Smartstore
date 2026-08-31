@@ -119,8 +119,7 @@ public class Bundle
 
     internal static IBundleProcessor[] DefaultScriptProcessors
     {
-        //get => [ConcatProcessor.Instance, NUglifyJsMinProcessor.Instance];
-        get => [JsMinProcessor.Instance, ConcatProcessor.Instance];
+        get => [NUglifyJsMinProcessor.Instance, ConcatProcessor.Instance];
     }
 
     internal static IBundleProcessor[] DefaultStyleProcessors

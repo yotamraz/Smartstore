@@ -5,7 +5,7 @@
         <OutDir>$(OutputPath)</OutDir>
     </PropertyGroup>
     <ItemGroup>
-        <PackageReference Include="DouglasCrockford.JsMin" Version="2.2.0" />
+        <PackageReference Include="NUglify" Version="1.21.17" />
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="..\..\Smartstore.Web\Smartstore.Web.csproj">

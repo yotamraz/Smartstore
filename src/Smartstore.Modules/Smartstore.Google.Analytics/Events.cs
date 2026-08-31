@@ -1,5 +1,5 @@
-﻿using DouglasCrockford.JsMin;
-using Microsoft.AspNetCore.Html;
+﻿using Microsoft.AspNetCore.Html;
+using NUglify;
 using Microsoft.AspNetCore.Mvc.ViewComponents;
 using Smartstore.Core.Identity;
 using Smartstore.Core.Widgets;
@@ -65,7 +65,7 @@ public class Events : IConsumer
 
                 if (_settings.MinifyScripts)
                 {
-                    itemsScript = new JsMinifier().Minify(itemsScript);
+                    itemsScript = Uglify.Js(itemsScript).Code;
                 }
 
                 // If user has not accepted the cookie consent and the module is configured to render only with user consent, add consent attributes.

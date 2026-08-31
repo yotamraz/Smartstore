@@ -67,11 +67,8 @@ public class MinifyTagHelper : TagHelper
 
             try
             {
-                // Return the minified JavaScript code
-                //var minContent = NUglifyJsMinProcessor.Instance.MinifyCore(originalContent);
-                //return minContent.Code;
-                var minContent = JsMinProcessor.Minifier.Minify(originalContent);
-                return minContent;
+                var result = NUglifyJsMinProcessor.Instance.MinifyCore(originalContent);
+                return result.Code;
             }
             catch
             {
