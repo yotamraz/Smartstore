@@ -4,22 +4,61 @@ import path from "path";
 // Storage state file for reuse across tests
 export const STORAGE_STATE = path.join(__dirname, "storageState.json");
 
-// Admin credentials (from QA report)
-const ADMIN_EMAIL = "admin@yourstore.com";
-// Password sourced from lifecycle env_vars — fall back to common dev default
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin";
+// Admin credentials — set during installation wizard
+const ADMIN_EMAIL = "admin@smartstore.com";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Admin1234!";
+
+// Inject a cookie to bypass the Smartstore cookie-consent modal.
+// The modal only appears when the consent cookie is absent; setting it via
+// browser context avoids the full JS / Bootstrap modal animation cycle.
+async function acceptCookies(page: import("@playwright/test").Page) {
+  await page.context().addCookies([
+    {
+      name: "CookieConsent",
+      value: "true",
+      domain: "localhost",
+      path: "/",
+    },
+  ]);
+}
 
 setup("authenticate as admin", async ({ page }) => {
-  // Navigate to the admin area — redirects to login if not authenticated
-  await page.goto("/admin/");
+  // Pre-accept cookies so the consent modal does not block clicks.
+  await acceptCookies(page);
 
-  // Fill in the login form (selectors confirmed by QA agent)
-  await page.fill('input[name="Email"]', ADMIN_EMAIL);
+  // Navigate to the login page
+  await page.goto("/login/");
+  await page.waitForLoadState("networkidle");
+
+  // Force-hide the cookie modal if it still appears (belt-and-suspenders).
+  await page.evaluate(() => {
+    const modal = document.getElementById("cookie-manager-window");
+    if (modal) {
+      modal.style.display = "none";
+      modal.remove();
+    }
+    // Also remove any modal-backdrop overlay
+    document.querySelectorAll(".modal-backdrop").forEach((el) => el.remove());
+    document.body.classList.remove("modal-open");
+  });
+
+  // Verify we are on the login page with the form visible
+  await expect(page.locator('input[name="UsernameOrEmail"]')).toBeVisible({
+    timeout: 15000,
+  });
+
+  // Fill in the login form (selectors confirmed by browser inspection)
+  await page.fill('input[name="UsernameOrEmail"]', ADMIN_EMAIL);
   await page.fill('input[name="Password"]', ADMIN_PASSWORD);
-  await page.click('button[type="submit"]');
 
-  // Wait for redirect to admin dashboard
-  await page.waitForURL("**/admin/**", { timeout: 15000 });
+  // Click the Log in button (confirmed class btn-login, unique to this form)
+  await page.locator("button.btn-login").click({ force: true });
+
+  // Wait for successful login and redirect
+  await page.waitForLoadState("networkidle");
+
+  // After login, navigate to admin area
+  await page.goto("/admin/");
   await page.waitForLoadState("networkidle");
 
   // Confirm we are on the admin panel
