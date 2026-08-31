@@ -7,6 +7,7 @@ using Smartstore.Core.Security;
 using Smartstore.Data;
 using Smartstore.Data.Hooks;
 using Smartstore.Scheduling;
+using Smartstore.Utilities;
 
 namespace Smartstore.Core.Identity.Rules;
 
@@ -32,22 +33,31 @@ public partial class TargetGroupEvaluatorTask(
         {
             // Delete existing system mappings.
             var deleteQuery = _db.CustomerRoleMappings.Where(x => x.IsSystemMapping);
-            if (ctx.Parameters.ContainsKey("CustomerRoleIds"))
+            var hasRoleFilter = ctx.Parameters.ContainsKey("CustomerRoleIds");
+            int[] roleIds = null;
+
+            if (hasRoleFilter)
             {
-                var roleIds = ctx.Parameters["CustomerRoleIds"].ToIntArray();
+                roleIds = ctx.Parameters["CustomerRoleIds"].ToIntArray();
                 deleteQuery = deleteQuery.Where(x => roleIds.Contains(x.CustomerRoleId));
             }
 
             numDeleted = await deleteQuery.ExecuteDeleteAsync(cancelToken);
 
             // Insert new customer role mappings.
-            var roles = await _db.CustomerRoles
+            var rolesQuery = _db.CustomerRoles
                 .Include(x => x.RuleSets)
                 .ThenInclude(x => x.Rules)
                 .AsNoTracking()
                 .AsSplitQuery()
-                .Where(x => x.Active && x.RuleSets.Any(y => y.IsActive))
-                .ToListAsync(cancelToken);
+                .Where(x => x.Active && x.RuleSets.Any(y => y.IsActive));
+
+            if (hasRoleFilter)
+            {
+                rolesQuery = rolesQuery.Where(x => roleIds.Contains(x.Id));
+            }
+
+            var roles = await rolesQuery.ToListAsync(cancelToken);
             rolesCount = roles.Count;
 
             foreach (var role in roles)
@@ -98,13 +108,9 @@ public partial class TargetGroupEvaluatorTask(
                         await scope.CommitAsync(cancelToken);
                     }
 
-                    try
-                    {
-                        scope.DbContext.DetachEntities<CustomerRoleMapping>();
-                    }
-                    catch
-                    {
-                    }
+                    CommonHelper.TryAction(
+                        () => scope.DbContext.DetachEntities<CustomerRoleMapping>(),
+                        ex => Debug.WriteLine($"DetachEntities failed for role \"{role.SystemName}\": {ex.Message}"));
                 }
             }
         }
