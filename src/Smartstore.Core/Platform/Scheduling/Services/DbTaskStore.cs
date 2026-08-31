@@ -185,6 +185,7 @@ public partial class DbTaskStore : Disposable, ITaskStore
         }
         catch (Exception ex)
         {
+            // Do not throw an exception if the underlying provider failed on Open.
             Logger.Debug(ex, "GetTaskByTypeAsync failed for type {TaskType}", type);
             ex.Dump();
         }

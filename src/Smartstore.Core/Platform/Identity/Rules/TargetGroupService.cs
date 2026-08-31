@@ -108,8 +108,11 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
         var result = ProcessFilter(filters, logicalOperator, pageIndex, pageSize);
 
         sw.Stop();
-        Logger.Debug("ProcessFilterAsync completed: {ResultCount} customers matched in {ElapsedMs}ms",
-            result.TotalCount, sw.ElapsedMilliseconds);
+        if (Logger.IsDebugEnabled())
+        {
+            Logger.Debug("ProcessFilterAsync completed: {ResultCount} customers matched in {ElapsedMs}ms",
+                result.TotalCount, sw.ElapsedMilliseconds);
+        }
 
         return result;
     }

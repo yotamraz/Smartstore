@@ -16,7 +16,6 @@ The test approach:
 - Verify Serilog configuration has the expected namespace overrides
 """
 
-import json
 import os
 import re
 import subprocess

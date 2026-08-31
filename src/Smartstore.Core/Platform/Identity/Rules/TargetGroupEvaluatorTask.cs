@@ -59,6 +59,11 @@ public partial class TargetGroupEvaluatorTask(
             MsLogLevel.Debug, 0,
             "TargetGroupEvaluatorTask.Run completed. RolesProcessed={RolesProcessed}, MappingsCreated={MappingsCreated}, MappingsDeleted={MappingsDeleted}, ElapsedMs={ElapsedMs}");
 
+    private static readonly Action<ILogger, int, string, Exception> _logRoleError =
+        LoggerMessage.Define<int, string>(
+            MsLogLevel.Error, 0,
+            "Error processing role {RoleId} \"{RoleName}\"");
+
     protected readonly SmartDbContext _db = db;
     protected readonly ICacheManager _cache = cache;
     protected readonly IRuleService _ruleService = ruleService;
@@ -111,72 +116,77 @@ public partial class TargetGroupEvaluatorTask(
 
             foreach (var role in roles)
             {
-                var ruleSetCustomerIds = new HashSet<int>();
-                var activeRuleSets = role.RuleSets.Where(x => x.IsActive).ToList();
-
-                _logProcessingRole(Logger, role.Id, role.SystemName.NaIfEmpty(), activeRuleSets.Count, null);
-
-                await ctx.SetProgressAsync(++count, roles.Count, $"Add customer assignments for role \"{role.SystemName.NaIfEmpty()}\".");
-
-                // Execute active rule sets and collect customer ids.
-                foreach (var ruleSet in activeRuleSets)
+                try
                 {
-                    if (cancelToken.IsCancellationRequested)
-                        return;
+                    var ruleSetCustomerIds = new HashSet<int>();
+                    var activeRuleSets = role.RuleSets.Where(x => x.IsActive).ToList();
 
-                    var countBefore = ruleSetCustomerIds.Count;
+                    _logProcessingRole(Logger, role.Id, role.SystemName.NaIfEmpty(), activeRuleSets.Count, null);
 
-                    var expressionGroup = await _ruleService.CreateExpressionGroupAsync(ruleSet, _targetGroupService);
-                    if (expressionGroup is FilterExpression expression)
-                    {
-                        var filterResult = _targetGroupService.ProcessFilter(expression, 0, 500);
-                        var resultPager = new FastPager<Customer>(filterResult.SourceQuery, 500);
+                    await ctx.SetProgressAsync(++count, roles.Count, $"Add customer assignments for role \"{role.SystemName.NaIfEmpty()}\".");
 
-                        while ((await resultPager.ReadNextPageAsync(x => x.Id, x => x, cancelToken)).Out(out var customerIds))
-                        {
-                            ruleSetCustomerIds.AddRange(customerIds);
-                        }
-                    }
-
-                    _logRuleEvaluationResult(Logger, ruleSet.Id, expressionGroup?.GetType().Name ?? "null", ruleSetCustomerIds.Count - countBefore, null);
-                }
-
-                // Add mappings.
-                if (ruleSetCustomerIds.Any())
-                {
-                    var chunkIndex = 0;
-                    foreach (var chunk in ruleSetCustomerIds.Chunk(500))
+                    // Execute active rule sets and collect customer ids.
+                    foreach (var ruleSet in activeRuleSets)
                     {
                         if (cancelToken.IsCancellationRequested)
                             return;
 
-                        foreach (var customerId in chunk)
-                        {
-                            _db.CustomerRoleMappings.Add(new CustomerRoleMapping
-                            {
-                                CustomerId = customerId,
-                                CustomerRoleId = role.Id,
-                                IsSystemMapping = true
-                            });
+                        var countBefore = ruleSetCustomerIds.Count;
 
-                            ++numAdded;
+                        var expressionGroup = await _ruleService.CreateExpressionGroupAsync(ruleSet, _targetGroupService);
+                        if (expressionGroup is FilterExpression expression)
+                        {
+                            var filterResult = _targetGroupService.ProcessFilter(expression, 0, 500);
+                            var resultPager = new FastPager<Customer>(filterResult.SourceQuery, 500);
+
+                            while ((await resultPager.ReadNextPageAsync(x => x.Id, x => x, cancelToken)).Out(out var customerIds))
+                            {
+                                ruleSetCustomerIds.AddRange(customerIds);
+                            }
                         }
 
-                        await scope.CommitAsync(cancelToken);
-
-                        _logChunkInserted(Logger, chunkIndex, chunk.Length, numAdded, null);
-                        chunkIndex++;
+                        _logRuleEvaluationResult(Logger, ruleSet.Id, expressionGroup?.GetType().Name ?? "null", ruleSetCustomerIds.Count - countBefore, null);
                     }
 
-                    try
+                    // Add mappings.
+                    if (ruleSetCustomerIds.Any())
                     {
-                        scope.DbContext.DetachEntities<CustomerRoleMapping>();
-                        _logEntityDetachment(Logger, role.Id, role.SystemName.NaIfEmpty(), null);
+                        var chunkIndex = 0;
+                        foreach (var chunk in ruleSetCustomerIds.Chunk(500))
+                        {
+                            if (cancelToken.IsCancellationRequested)
+                                return;
+
+                            foreach (var customerId in chunk)
+                            {
+                                _db.CustomerRoleMappings.Add(new CustomerRoleMapping
+                                {
+                                    CustomerId = customerId,
+                                    CustomerRoleId = role.Id,
+                                    IsSystemMapping = true
+                                });
+
+                                ++numAdded;
+                            }
+
+                            await scope.CommitAsync(cancelToken);
+
+                            _logChunkInserted(Logger, chunkIndex, chunk.Length, numAdded, null);
+                            chunkIndex++;
+                        }
+
+                        CommonHelper.TryAction(
+                            () =>
+                            {
+                                scope.DbContext.DetachEntities<CustomerRoleMapping>();
+                                _logEntityDetachment(Logger, role.Id, role.SystemName.NaIfEmpty(), null);
+                            },
+                            ex => Logger.Debug(ex, "DetachEntities failed for role {RoleId} \"{RoleName}\"", role.Id, role.SystemName));
                     }
-                    catch (Exception ex)
-                    {
-                        Logger.Debug(ex, "DetachEntities failed for role {RoleId} \"{RoleName}\"", role.Id, role.SystemName);
-                    }
+                }
+                catch (Exception ex)
+                {
+                    _logRoleError(Logger, role.Id, role.SystemName.NaIfEmpty(), ex);
                 }
             }
         }
