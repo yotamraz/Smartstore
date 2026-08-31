@@ -7,6 +7,7 @@ using Smartstore.Core.Security;
 using Smartstore.Data;
 using Smartstore.Data.Hooks;
 using Smartstore.Scheduling;
+using Smartstore.Utilities;
 
 namespace Smartstore.Core.Identity.Rules;
 
@@ -107,13 +108,9 @@ public partial class TargetGroupEvaluatorTask(
                         await scope.CommitAsync(cancelToken);
                     }
 
-                    try
-                    {
-                        scope.DbContext.DetachEntities<CustomerRoleMapping>();
-                    }
-                    catch
-                    {
-                    }
+                    CommonHelper.TryAction(
+                        () => scope.DbContext.DetachEntities<CustomerRoleMapping>(),
+                        ex => Debug.WriteLine($"DetachEntities failed for role \"{role.SystemName}\": {ex.Message}"));
                 }
             }
         }
