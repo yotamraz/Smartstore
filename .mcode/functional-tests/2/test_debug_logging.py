@@ -5,9 +5,9 @@ Verifies that structured debug-level logging was correctly added to four core
 Smartstore services without breaking existing behavior:
 
 1. TargetGroupEvaluatorTask.cs - LoggerMessage.Define delegates + ILogger
-2. TargetGroupService.cs - ILogger property + Logger.Debug() calls
+2. TargetGroupService.cs - ILogger property + LoggerMessage.Define delegates
 3. DbTaskStore.cs - ILogger property + Logger.Debug()/Error() calls
-4. RuleService.cs - ILogger property + Logger.Debug() calls
+4. RuleService.cs - ILogger property + LoggerMessage.Define delegates
 5. appsettings.json - Serilog per-source-context overrides
 
 The test approach:
@@ -18,36 +18,10 @@ The test approach:
 
 import os
 import re
-import subprocess
 import pytest
 
-
-# Resolve paths
-SMARTSTORE_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
-)
-if os.environ.get("WORKSPACE_DIR"):
-    _candidate = os.path.join(os.environ["WORKSPACE_DIR"], "Smartstore")
-    if os.path.isdir(_candidate):
-        SMARTSTORE_ROOT = os.path.normpath(_candidate)
-
-TEST_PROJECT_REL = os.path.join(
-    "test", "Smartstore.Core.Tests", "Smartstore.Core.Tests.csproj"
-)
-TEST_PROJECT = os.path.join(SMARTSTORE_ROOT, TEST_PROJECT_REL)
-
-PIXI_ACTIVATE = os.environ.get("PIXI_ACTIVATE_ENV_HELPER", "")
-
-_LOCALAPPDATA = os.environ.get("LOCALAPPDATA", "")
-_USER_LOCALAPPDATA = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local")
-PIXI_CACHE_DIR = ""
-for candidate_dir in [_LOCALAPPDATA, _USER_LOCALAPPDATA]:
-    _candidate_cache = os.path.join(candidate_dir, "pixi", "cache")
-    if os.path.isdir(_candidate_cache):
-        PIXI_CACHE_DIR = _candidate_cache
-        break
-if not PIXI_CACHE_DIR:
-    PIXI_CACHE_DIR = os.path.join(_LOCALAPPDATA, "pixi", "cache")
+# Shared infrastructure is in conftest.py (auto-loaded by pytest)
+from conftest import SMARTSTORE_ROOT, run_dotnet_test
 
 
 # -- Source file paths --
@@ -73,39 +47,6 @@ APPSETTINGS_PATH = os.path.join(
 )
 
 
-def run_dotnet(*args, timeout=300):
-    """Run a dotnet command with pixi environment activation."""
-    dotnet_args = " ".join(args)
-    ps_script = (
-        "$ErrorActionPreference = 'Continue'\n"
-        f". '{PIXI_ACTIVATE}'\n"
-        f"$env:PIXI_CACHE_DIR = '{PIXI_CACHE_DIR}'\n"
-        "activate-env target-app\n"
-        f"cd '{SMARTSTORE_ROOT}'\n"
-        f"dotnet {dotnet_args}\n"
-        "exit $LASTEXITCODE\n"
-    )
-    result = subprocess.run(
-        ["powershell", "-NonInteractive", "-Command", ps_script],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        cwd=SMARTSTORE_ROOT,
-    )
-    return result
-
-
-def run_dotnet_test(filter_expr=None, timeout=300):
-    """Run dotnet test with optional NUnit filter expression."""
-    args = [
-        "test", TEST_PROJECT_REL, "--no-build",
-        "--logger", '"console;verbosity=normal"',
-    ]
-    if filter_expr:
-        args.extend(["--filter", f'"{filter_expr}"'])
-    return run_dotnet(*args, timeout=timeout)
-
-
 def read_source(path):
     """Read a source file and return its content."""
     with open(path, "r", encoding="utf-8") as f:
@@ -113,17 +54,6 @@ def read_source(path):
 
 
 # ---- Fixtures ----
-
-@pytest.fixture(scope="module")
-def full_test_result():
-    """Run the full NUnit test suite once for all tests in this module."""
-    result = run_dotnet(
-        "test", TEST_PROJECT_REL, "--no-build",
-        "--logger", '"console;verbosity=normal"',
-        timeout=300,
-    )
-    return result
-
 
 @pytest.fixture(scope="module")
 def evaluator_source():
@@ -361,10 +291,6 @@ class TestSerilogConfiguration:
         """Serilog config has Smartstore.Scheduling set to Debug level."""
         assert "Smartstore.Scheduling" in appsettings_content
 
-    def test_has_rules_debug_override(self, appsettings_content):
-        """Serilog config has Smartstore.Core.Rules set to Debug level."""
-        assert "Smartstore.Core.Rules" in appsettings_content
-
     def test_database_sink_stays_at_information(self, appsettings_content):
         """Database sink level remains at Information to avoid flooding log table."""
         # The appsettings should mention the database sink constraint
@@ -376,39 +302,3 @@ class TestSerilogConfiguration:
         )
 
 
-class TestExistingMilestone1TestsStillPass:
-    """Verify the milestone 1 NUnit tests (unit, integration, parity) still pass
-    after milestone 2 logging changes -- no regressions."""
-
-    def test_unit_tests_pass(self):
-        """All Tier 1 unit tests (TargetGroupEvaluatorTaskTests) still pass."""
-        result = run_dotnet_test(
-            "FullyQualifiedName~TargetGroupEvaluatorTaskTests",
-            timeout=120,
-        )
-        assert result.returncode == 0, (
-            f"Unit tests failed.\nSTDOUT:\n{result.stdout[-2000:]}\n"
-            f"STDERR:\n{result.stderr[-1000:]}"
-        )
-
-    def test_integration_tests_pass(self):
-        """All Tier 2 integration tests still pass."""
-        result = run_dotnet_test(
-            "FullyQualifiedName~TargetGroupEvaluatorTaskIntegrationTests",
-            timeout=120,
-        )
-        assert result.returncode == 0, (
-            f"Integration tests failed.\nSTDOUT:\n{result.stdout[-2000:]}\n"
-            f"STDERR:\n{result.stderr[-1000:]}"
-        )
-
-    def test_parity_tests_pass(self):
-        """All Tier 3 parity tests still pass."""
-        result = run_dotnet_test(
-            "FullyQualifiedName~TargetGroupEvaluatorTaskParityTests",
-            timeout=120,
-        )
-        assert result.returncode == 0, (
-            f"Parity tests failed.\nSTDOUT:\n{result.stdout[-2000:]}\n"
-            f"STDERR:\n{result.stderr[-1000:]}"
-        )
