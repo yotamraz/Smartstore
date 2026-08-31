@@ -19,8 +19,8 @@ public partial class TargetGroupEvaluatorTask(
     IRuleService ruleService,
     IRuleProviderFactory ruleProviderFactory) : ITask
 {
-    private static readonly Action<ILogger, int[], bool, Exception> _logRunStarted =
-        LoggerMessage.Define<int[], bool>(
+    private static readonly Action<ILogger, string, bool, Exception> _logRunStarted =
+        LoggerMessage.Define<string, bool>(
             MsLogLevel.Debug, 0,
             "TargetGroupEvaluatorTask.Run started. CustomerRoleIds={CustomerRoleIds}, CancellationRequested={CancellationRequested}");
 
@@ -49,10 +49,10 @@ public partial class TargetGroupEvaluatorTask(
             MsLogLevel.Debug, 0,
             "Detached CustomerRoleMapping entities for role {RoleId} \"{RoleName}\"");
 
-    private static readonly Action<ILogger, bool, string, Exception> _logCacheInvalidation =
-        LoggerMessage.Define<bool, string>(
+    private static readonly Action<ILogger, bool, int, int, Exception> _logCacheInvalidation =
+        LoggerMessage.Define<bool, int, int>(
             MsLogLevel.Debug, 0,
-            "Cache invalidation: Cleared={Cleared}, Reason={Reason}");
+            "Cache invalidation: Cleared={Cleared}, NumAdded={NumAdded}, NumDeleted={NumDeleted}");
 
     private static readonly Action<ILogger, int, int, int, long, Exception> _logRunCompleted =
         LoggerMessage.Define<int, int, int, long>(
@@ -77,7 +77,7 @@ public partial class TargetGroupEvaluatorTask(
         var hasRoleFilter = ctx.Parameters.ContainsKey("CustomerRoleIds");
         int[] roleIds = hasRoleFilter ? ctx.Parameters["CustomerRoleIds"].ToIntArray() : null;
 
-        _logRunStarted(Logger, roleIds, cancelToken.IsCancellationRequested, null);
+        _logRunStarted(Logger, roleIds != null ? string.Join(",", roleIds) : "(none)", cancelToken.IsCancellationRequested, null);
 
         using (var scope = new DbContextScope(_db, autoDetectChanges: false, minHookImportance: HookImportance.Important, deferCommit: true))
         {
@@ -124,6 +124,8 @@ public partial class TargetGroupEvaluatorTask(
                     if (cancelToken.IsCancellationRequested)
                         return;
 
+                    var countBefore = ruleSetCustomerIds.Count;
+
                     var expressionGroup = await _ruleService.CreateExpressionGroupAsync(ruleSet, _targetGroupService);
                     if (expressionGroup is FilterExpression expression)
                     {
@@ -136,7 +138,7 @@ public partial class TargetGroupEvaluatorTask(
                         }
                     }
 
-                    _logRuleEvaluationResult(Logger, ruleSet.Id, expressionGroup?.GetType().Name ?? "null", ruleSetCustomerIds.Count, null);
+                    _logRuleEvaluationResult(Logger, ruleSet.Id, expressionGroup?.GetType().Name ?? "null", ruleSetCustomerIds.Count - countBefore, null);
                 }
 
                 // Add mappings.
@@ -185,9 +187,7 @@ public partial class TargetGroupEvaluatorTask(
             await _cache.RemoveByPatternAsync(AclService.ACL_SEGMENT_PATTERN);
         }
 
-        _logCacheInvalidation(Logger, cacheCleared,
-            cacheCleared ? $"numAdded={numAdded}, numDeleted={numDeleted}" : "No changes",
-            null);
+        _logCacheInvalidation(Logger, cacheCleared, numAdded, numDeleted, null);
 
         stopwatch.Stop();
         _logRunCompleted(Logger, rolesCount, numAdded, numDeleted, stopwatch.ElapsedMilliseconds, null);

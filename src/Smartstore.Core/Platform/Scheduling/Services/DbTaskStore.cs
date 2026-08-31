@@ -527,6 +527,9 @@ public partial class DbTaskStore : Disposable, ITaskStore
     {
         Guard.NotNull(info);
 
+        Logger.Debug("Inserting execution info for TaskId={TaskId}, MachineName={MachineName}, StartedOnUtc={StartedOnUtc}",
+            info.TaskDescriptorId, info.MachineName, info.StartedOnUtc);
+
         Db.TaskExecutionInfos.Add(info);
         return Db.SaveChangesAsync();
     }
