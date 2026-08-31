@@ -3,11 +3,44 @@ using Autofac;
 using Smartstore.Core.Data;
 using Smartstore.Core.Localization;
 using Smartstore.Core.Rules.Rendering;
+using MsLogLevel = Microsoft.Extensions.Logging.LogLevel;
 
 namespace Smartstore.Core.Rules;
 
 public partial class RuleService : IRuleService
 {
+    private static readonly Action<ILogger, int, string, bool, Exception> _logLoadingRuleSet =
+        LoggerMessage.Define<int, string, bool>(MsLogLevel.Debug, 0,
+            "Loading rule set {RuleSetId} for expression group (Scope={Scope}, IncludeHidden={IncludeHidden})");
+
+    private static readonly Action<ILogger, int, Exception> _logRuleSetNotFound =
+        LoggerMessage.Define<int>(MsLogLevel.Debug, 0,
+            "Rule set {RuleSetId} not found");
+
+    private static readonly Action<ILogger, int, int, bool, Exception> _logRuleSetLoaded =
+        LoggerMessage.Define<int, int, bool>(MsLogLevel.Debug, 0,
+            "Rule set {RuleSetId} loaded with {RuleCount} rules, IsActive={IsActive}");
+
+    private static readonly Action<ILogger, string, string, int, Exception> _logResolvingProvider =
+        LoggerMessage.Define<string, string, int>(MsLogLevel.Debug, 0,
+            "Resolving rule provider {ProviderType} for scope {Scope} on rule set {RuleSetId}");
+
+    private static readonly Action<ILogger, int, Exception> _logSkippingInactiveRuleSet =
+        LoggerMessage.Define<int>(MsLogLevel.Debug, 0,
+            "Skipping inactive rule set {RuleSetId}");
+
+    private static readonly Action<ILogger, int, int, string, Exception> _logBuiltExpressionGroup =
+        LoggerMessage.Define<int, int, string>(MsLogLevel.Debug, 0,
+            "Built expression group for rule set {RuleSetId}: {ExpressionCount} expressions, Operator={LogicalOperator}");
+
+    private static readonly Action<ILogger, int, string, string, Exception> _logVisitingRule =
+        LoggerMessage.Define<int, string, string>(MsLogLevel.Debug, 0,
+            "Visiting rule {RuleId}: Type={RuleType}, Operator={Operator}");
+
+    private static readonly Action<ILogger, int, string, Exception> _logVisitingSubGroup =
+        LoggerMessage.Define<int, string>(MsLogLevel.Debug, 0,
+            "Visiting sub-group rule {RuleId}, target RuleSetId={SubGroupRuleSetId}");
+
     private readonly SmartDbContext _db;
     private readonly IWorkContext _workContext;
     private readonly Lazy<IEnumerable<IRuleOptionsProvider>> _ruleOptionsProviders;
@@ -74,8 +107,7 @@ public partial class RuleService : IRuleService
             return null;
         }
 
-        Logger.Debug("Loading rule set {RuleSetId} for expression group (Scope={Scope}, IncludeHidden={IncludeHidden})",
-            ruleSetId, visitor.Scope, includeHidden);
+        _logLoadingRuleSet(Logger, ruleSetId, visitor.Scope.ToString(), includeHidden, null);
 
         // TODO: prevent stack overflow > check if nested groups reference each other.
 
@@ -86,21 +118,19 @@ public partial class RuleService : IRuleService
 
         if (ruleSet == null)
         {
-            Logger.Debug("Rule set {RuleSetId} not found", ruleSetId);
+            _logRuleSetNotFound(Logger, ruleSetId, null);
             // TODO: ErrHandling (???)
             return null;
         }
 
-        Logger.Debug("Rule set {RuleSetId} loaded with {RuleCount} rules, IsActive={IsActive}",
-            ruleSetId, ruleSet.Rules.Count, ruleSet.IsActive);
+        _logRuleSetLoaded(Logger, ruleSetId, ruleSet.Rules.Count, ruleSet.IsActive, null);
 
         return await CreateExpressionGroupAsync(ruleSet, visitor, includeHidden);
     }
 
     public virtual async Task<IRuleExpressionGroup> CreateExpressionGroupAsync(RuleSetEntity ruleSet, IRuleVisitor visitor, bool includeHidden = false)
     {
-        Logger.Debug("Resolving rule provider {ProviderType} for scope {Scope} on rule set {RuleSetId}",
-            visitor.GetType().Name, visitor.Scope, ruleSet.Id);
+        _logResolvingProvider(Logger, visitor.GetType().Name, visitor.Scope.ToString(), ruleSet.Id, null);
 
         if (ruleSet.Scope != visitor.Scope)
         {
@@ -109,7 +139,7 @@ public partial class RuleService : IRuleService
 
         if (!includeHidden && !ruleSet.IsActive)
         {
-            Logger.Debug("Skipping inactive rule set {RuleSetId}", ruleSet.Id);
+            _logSkippingInactiveRuleSet(Logger, ruleSet.Id, null);
             return null;
         }
 
@@ -124,8 +154,7 @@ public partial class RuleService : IRuleService
 
         group.AddExpressions(expressions);
 
-        Logger.Debug("Built expression group for rule set {RuleSetId}: {ExpressionCount} expressions, Operator={LogicalOperator}",
-            ruleSet.Id, expressions.Length, ruleSet.LogicalOperator);
+        _logBuiltExpressionGroup(Logger, ruleSet.Id, expressions.Length, ruleSet.LogicalOperator.ToString(), null);
 
         return group;
     }
@@ -259,15 +288,13 @@ public partial class RuleService : IRuleService
     {
         if (!ruleEntity.IsGroup)
         {
-            Logger.Debug("Visiting rule {RuleId}: Type={RuleType}, Operator={Operator}",
-                ruleEntity.Id, ruleEntity.RuleType, ruleEntity.Operator);
+            _logVisitingRule(Logger, ruleEntity.Id, ruleEntity.RuleType, ruleEntity.Operator.ToString(), null);
 
             return await visitor.VisitRuleAsync(ruleEntity);
         }
 
         // It's a group, do recursive call.
-        Logger.Debug("Visiting sub-group rule {RuleId}, target RuleSetId={SubGroupRuleSetId}",
-            ruleEntity.Id, ruleEntity.Value);
+        _logVisitingSubGroup(Logger, ruleEntity.Id, ruleEntity.Value, null);
 
         var group = await CreateExpressionGroupAsync(ruleEntity.Value.Convert<int>(), visitor);
         if (group != null)
