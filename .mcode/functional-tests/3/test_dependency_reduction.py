@@ -271,64 +271,47 @@ class TestJsMinReplacedWithNUglify:
 class TestAddRangeOptimization:
     """Verify TargetGroupEvaluatorTask uses AddRange for bulk inserts."""
 
-    def test_uses_addrange_not_individual_add(self):
-        """TargetGroupEvaluatorTask.cs uses AddRange() instead of individual Add() calls."""
-        content = read_file(os.path.join(
+    @pytest.fixture(scope="class")
+    def task_content(self):
+        """Read TargetGroupEvaluatorTask.cs once for all tests in this class."""
+        return read_file(os.path.join(
             "src", "Smartstore.Core", "Platform", "Identity", "Rules",
             "TargetGroupEvaluatorTask.cs"
         ))
-        assert "AddRange(" in content, (
+
+    def test_uses_addrange_not_individual_add(self, task_content):
+        """TargetGroupEvaluatorTask.cs uses AddRange() instead of individual Add() calls."""
+        assert "AddRange(" in task_content, (
             "TargetGroupEvaluatorTask.cs should use AddRange() for bulk inserts"
         )
 
-    def test_addrange_on_customer_role_mappings(self):
+    def test_addrange_on_customer_role_mappings(self, task_content):
         """AddRange is called on _db.CustomerRoleMappings."""
-        content = read_file(os.path.join(
-            "src", "Smartstore.Core", "Platform", "Identity", "Rules",
-            "TargetGroupEvaluatorTask.cs"
-        ))
-        assert "_db.CustomerRoleMappings.AddRange(" in content, (
+        assert "_db.CustomerRoleMappings.AddRange(" in task_content, (
             "AddRange should be called on _db.CustomerRoleMappings"
         )
 
-    def test_chunk_size_500_preserved(self):
+    def test_chunk_size_500_preserved(self, task_content):
         """The 500-record chunk size is preserved in the AddRange optimization."""
-        content = read_file(os.path.join(
-            "src", "Smartstore.Core", "Platform", "Identity", "Rules",
-            "TargetGroupEvaluatorTask.cs"
-        ))
-        assert "Chunk(500)" in content or ".Chunk(500)" in content, (
+        assert "Chunk(500)" in task_content or ".Chunk(500)" in task_content, (
             "TargetGroupEvaluatorTask.cs should chunk records in groups of 500"
         )
 
-    def test_commit_after_each_chunk(self):
+    def test_commit_after_each_chunk(self, task_content):
         """CommitAsync is still called after each chunk insertion."""
-        content = read_file(os.path.join(
-            "src", "Smartstore.Core", "Platform", "Identity", "Rules",
-            "TargetGroupEvaluatorTask.cs"
-        ))
-        assert "scope.CommitAsync(" in content, (
+        assert "scope.CommitAsync(" in task_content, (
             "TargetGroupEvaluatorTask.cs should still call CommitAsync after each chunk"
         )
 
-    def test_is_system_mapping_flag_set(self):
+    def test_is_system_mapping_flag_set(self, task_content):
         """IsSystemMapping = true is set on new mappings."""
-        content = read_file(os.path.join(
-            "src", "Smartstore.Core", "Platform", "Identity", "Rules",
-            "TargetGroupEvaluatorTask.cs"
-        ))
-        assert "IsSystemMapping = true" in content, (
+        assert "IsSystemMapping = true" in task_content, (
             "New CustomerRoleMapping records must have IsSystemMapping = true"
         )
 
-    def test_no_individual_add_calls(self):
+    def test_no_individual_add_calls(self, task_content):
         """No individual _db.CustomerRoleMappings.Add() calls (replaced by AddRange)."""
-        content = read_file(os.path.join(
-            "src", "Smartstore.Core", "Platform", "Identity", "Rules",
-            "TargetGroupEvaluatorTask.cs"
-        ))
-        # There should be AddRange but not a standalone .Add( call
-        lines = content.split("\n")
+        lines = task_content.split("\n")
         for line in lines:
             stripped = line.strip()
             if "_db.CustomerRoleMappings.Add(" in stripped and "AddRange" not in stripped:
