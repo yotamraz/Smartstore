@@ -65,7 +65,11 @@ public class Events : IConsumer
 
                 if (_settings.MinifyScripts)
                 {
-                    itemsScript = Uglify.Js(itemsScript).Code;
+                    var result = Uglify.Js(itemsScript);
+                    if (!result.HasErrors && result.Code != null)
+                    {
+                        itemsScript = result.Code;
+                    }
                 }
 
                 // If user has not accepted the cookie consent and the module is configured to render only with user consent, add consent attributes.

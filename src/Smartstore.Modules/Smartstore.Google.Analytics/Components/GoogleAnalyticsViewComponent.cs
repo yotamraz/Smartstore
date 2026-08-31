@@ -148,6 +148,15 @@ public class GoogleAnalyticsViewComponent : SmartViewComponent
             var adUserDataAllowed = await _cookieConsentManager.IsCookieAllowedAsync(CookieType.ConsentAdUserData);
             var adPersonalizationAllowed = await _cookieConsentManager.IsCookieAllowedAsync(CookieType.ConsentAdPersonalization);
 
+            if (_settings.MinifyScripts && specificScript.HasValue())
+            {
+                var result = Uglify.Js(specificScript);
+                if (!result.HasErrors && result.Code != null)
+                {
+                    specificScript = result.Code;
+                }
+            }
+
             rootScript = _googleAnalyticsScriptHelper.GetTrackingScript(cookiesAllowed, adUserDataAllowed, adPersonalizationAllowed)
                 .Replace("{ECOMMERCE}", specificScript);
         }
@@ -165,10 +174,8 @@ public class GoogleAnalyticsViewComponent : SmartViewComponent
             rootScript = rootScript.Replace("src=", "data-src=");
         }
 
-        if (_settings.MinifyScripts && rootScript.HasValue())
-        {
-            rootScript = Uglify.Js(rootScript).Code;
-        }
+        // NOTE: rootScript contains HTML+JS mixed content (script tags, HTML comments).
+        // JS minification is applied to specificScript only (above), before embedding into the HTML template.
 
         var path = Url.Content("~/Modules/Smartstore.Google.Analytics/js/google-analytics.utils.js");
         //rootScript = $"<script {(consented ? string.Empty : "data-consent=\"analytics\" data-")}src='{path}'></script>\n{rootScript}";
