@@ -93,17 +93,15 @@ public partial class TargetGroupEvaluatorTask(
                         if (cancelToken.IsCancellationRequested)
                             return;
 
-                        foreach (var customerId in chunk)
+                        var mappings = chunk.Select(customerId => new CustomerRoleMapping
                         {
-                            _db.CustomerRoleMappings.Add(new CustomerRoleMapping
-                            {
-                                CustomerId = customerId,
-                                CustomerRoleId = role.Id,
-                                IsSystemMapping = true
-                            });
+                            CustomerId = customerId,
+                            CustomerRoleId = role.Id,
+                            IsSystemMapping = true
+                        });
 
-                            ++numAdded;
-                        }
+                        _db.CustomerRoleMappings.AddRange(mappings);
+                        numAdded += chunk.Length;
 
                         await scope.CommitAsync(cancelToken);
                     }
