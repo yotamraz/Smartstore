@@ -23,7 +23,6 @@ public abstract class NUglifyProcessor : BundleProcessor
             try
             {
                 var result = MinifyCore(asset.Content);
-                var minCode = result.Code;
 
                 if (result.HasErrors)
                 {
@@ -32,9 +31,8 @@ public abstract class NUglifyProcessor : BundleProcessor
                 else
                 {
                     context.ProcessorCodes.Add(Code);
+                    asset.Content = result.Code;
                 }
-
-                asset.Content = minCode;
             }
             catch (Exception ex)
             {
