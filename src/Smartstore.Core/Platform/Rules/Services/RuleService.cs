@@ -99,6 +99,9 @@ public partial class RuleService : IRuleService
 
     public virtual async Task<IRuleExpressionGroup> CreateExpressionGroupAsync(RuleSetEntity ruleSet, IRuleVisitor visitor, bool includeHidden = false)
     {
+        Logger.Debug("Resolving rule provider {ProviderType} for scope {Scope} on rule set {RuleSetId}",
+            visitor.GetType().Name, visitor.Scope, ruleSet.Id);
+
         if (ruleSet.Scope != visitor.Scope)
         {
             throw new InvalidOperationException($"Differing rule scope {ruleSet.Scope}. Expected {visitor.Scope}.");

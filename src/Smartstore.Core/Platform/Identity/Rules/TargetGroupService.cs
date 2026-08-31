@@ -1,4 +1,5 @@
-﻿using System.Runtime.CompilerServices;
+﻿using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 using Smartstore.Collections;
 using Smartstore.Core.Checkout.Orders;
@@ -93,16 +94,24 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
         Logger.Debug("ProcessFilterAsync called with {RuleSetCount} rule sets, Operator={LogicalOperator}, PageIndex={PageIndex}, PageSize={PageSize}",
             ruleSetIds.Length, logicalOperator, pageIndex, pageSize);
 
+        var sw = Stopwatch.StartNew();
+
         var filters = await ruleSetIds
             .SelectAwait(id => _ruleService.CreateExpressionGroupAsync(id, this))
             .Where(x => x != null)
             .Cast<FilterExpression>()
             .ToArrayAsync();
 
-        Logger.Debug("ProcessFilterAsync resolved {FilterCount} filter expressions from {RuleSetCount} rule sets",
-            filters.Length, ruleSetIds.Length);
+        Logger.Debug("ProcessFilterAsync resolved {FilterCount} filter expressions from {RuleSetCount} rule sets in {ElapsedMs}ms",
+            filters.Length, ruleSetIds.Length, sw.ElapsedMilliseconds);
 
-        return ProcessFilter(filters, logicalOperator, pageIndex, pageSize);
+        var result = ProcessFilter(filters, logicalOperator, pageIndex, pageSize);
+
+        sw.Stop();
+        Logger.Debug("ProcessFilterAsync completed: {ResultCount} customers matched in {ElapsedMs}ms",
+            result.TotalCount, sw.ElapsedMilliseconds);
+
+        return result;
     }
 
     public IPagedList<Customer> ProcessFilter(
@@ -118,6 +127,8 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
             Logger.Debug("ProcessFilter called with 0 filters, returning empty result");
             return Array.Empty<Customer>().ToPagedList(0, int.MaxValue);
         }
+
+        var sw = Stopwatch.StartNew();
 
         Logger.Debug("ProcessFilter composing customer query with {FilterCount} filters, Operator={LogicalOperator}",
             filters.Length, logicalOperator);
@@ -145,8 +156,9 @@ public partial class TargetGroupService : RuleProviderBase, ITargetGroupService
             .Cast<Customer>()
             .OrderByDescending(c => c.CreatedOnUtc);
 
-        Logger.Debug("ProcessFilter query composed with {ExpressionCount} expressions in group {GroupId}",
-            group.Expressions.Count(), group.Id);
+        sw.Stop();
+        Logger.Debug("ProcessFilter query composed with {ExpressionCount} expressions in group {GroupId} in {ElapsedMs}ms",
+            group.Expressions.Count(), group.Id, sw.ElapsedMilliseconds);
 
         return query.ToPagedList(pageIndex, pageSize);
     }

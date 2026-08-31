@@ -105,7 +105,14 @@ public partial class DbTaskStore : Disposable, ITaskStore
         {
             _retryPolicy = Policy
                 .Handle<Exception>(Db.DataProvider.IsTransientException)
-                .WaitAndRetryAsync(3, attempt => TimeSpan.FromMilliseconds(100));
+                .WaitAndRetryAsync(
+                    3,
+                    attempt => TimeSpan.FromMilliseconds(100),
+                    (exception, delay, retryCount, _) =>
+                    {
+                        Logger.Debug(exception, "Transient DB error on attempt {RetryCount}, retrying after {DelayMs}ms",
+                            retryCount, delay.TotalMilliseconds);
+                    });
         }
 
         return _retryPolicy;
