@@ -17,6 +17,7 @@ using Smartstore.Core.Identity;
 using Smartstore.Core.Identity.Rules;
 using Smartstore.Core.Rules;
 using Smartstore.Core.Rules.Filters;
+using Smartstore.Core.Security;
 using Smartstore.Data;
 using Smartstore.Data.Providers;
 using Smartstore.Scheduling;
@@ -277,50 +278,67 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
         var role = SeedRoleWithRuleSets("VipMembers", ruleSetCount: 1);
         var customers = SeedCustomers(3);
 
-        // Seed existing system mappings that should be deleted.
+        // Seed existing system mappings that should be deleted first.
         SeedSystemMappings(role.Id, customers.Select(c => c.Id).Take(1));
 
-        // Set up rule evaluation to return a filter expression for the rule set.
+        var mappingCountAtEvaluate = -1;
+        var callLog = new List<string>();
+
+        // Set up rule evaluation — snapshot mapping count to prove delete ran first.
         foreach (var ruleSet in role.RuleSets)
         {
-            SetupRuleServiceReturnsFilterExpression(ruleSet);
+            var filterExpression = new FilterExpressionGroup(typeof(Customer));
+            _ruleServiceMock
+                .Setup(x => x.CreateExpressionGroupAsync(
+                    It.Is<RuleSetEntity>(rs => rs.Id == ruleSet.Id),
+                    It.IsAny<IRuleVisitor>(),
+                    It.IsAny<bool>()))
+                .ReturnsAsync(() =>
+                {
+                    mappingCountAtEvaluate = _sqliteDb.CustomerRoleMappings
+                        .Count(m => m.CustomerRoleId == role.Id && m.IsSystemMapping);
+                    callLog.Add("evaluate");
+                    return filterExpression;
+                });
         }
 
-        // Set up target group service to return all 3 customers.
-        SetupTargetGroupServiceReturnsCustomers(customers.Select(c => c.Id));
+        // Set up target group service — track that process-filter ran.
+        var customerIdSet = customers.Select(c => c.Id).ToHashSet();
+        var sourceQuery = _sqliteDb.Customers.Where(c => customerIdSet.Contains(c.Id));
+        var pagedListMock = new Mock<IPagedList<Customer>>();
+        pagedListMock.Setup(x => x.SourceQuery).Returns(sourceQuery);
+        _targetGroupServiceMock
+            .Setup(x => x.ProcessFilter(
+                It.IsAny<FilterExpression[]>(),
+                It.IsAny<LogicalRuleOperator>(),
+                It.IsAny<int>(),
+                It.IsAny<int>()))
+            .Returns(() =>
+            {
+                callLog.Add("process-filter");
+                return pagedListMock.Object;
+            });
 
         var ctx = CreateTaskExecutionContext();
 
         // Act
         await _sut.Run(ctx, CancellationToken.None);
 
-        // Assert
+        // Assert ordering
+        var mappingCountAfterRun = _sqliteDb.CustomerRoleMappings
+            .Count(m => m.CustomerRoleId == role.Id && m.IsSystemMapping);
+
         Assert.Multiple(() =>
         {
-            // Verify rule service was called for each active rule set.
-            _ruleServiceMock.Verify(
-                x => x.CreateExpressionGroupAsync(
-                    It.IsAny<RuleSetEntity>(),
-                    It.IsAny<IRuleVisitor>(),
-                    It.IsAny<bool>()),
-                Times.Exactly(role.RuleSets.Count));
-
-            // Verify target group service was called.
-            _targetGroupServiceMock.Verify(
-                x => x.ProcessFilter(
-                    It.IsAny<FilterExpression[]>(),
-                    It.IsAny<LogicalRuleOperator>(),
-                    It.IsAny<int>(),
-                    It.IsAny<int>()),
-                Times.Once);
-
-            // Verify new system mappings were created for all customers.
-            var mappings = _sqliteDb.CustomerRoleMappings
-                .Where(m => m.CustomerRoleId == role.Id && m.IsSystemMapping)
-                .ToList();
-
-            Assert.That(mappings, Has.Count.EqualTo(3));
-            Assert.That(mappings.All(m => m.IsSystemMapping), Is.True);
+            // Delete ran before evaluate: no system mappings existed at evaluate time.
+            Assert.That(mappingCountAtEvaluate, Is.EqualTo(0),
+                "System mappings should be 0 at evaluate time (delete before evaluate).");
+            // Evaluate ran before insert: process-filter was called.
+            Assert.That(callLog, Does.Contain("evaluate"));
+            Assert.That(callLog, Does.Contain("process-filter"));
+            Assert.That(callLog.IndexOf("evaluate"), Is.LessThan(callLog.IndexOf("process-filter")));
+            // Insert completed: new mappings exist.
+            Assert.That(mappingCountAfterRun, Is.EqualTo(3));
         });
     }
 
@@ -396,17 +414,20 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
                 It.IsAny<bool>()))
             .ReturnsAsync((IRuleExpressionGroup)null);
 
+        var capturedProgressValues = new List<int>();
+        _taskStoreMock
+            .Setup(x => x.UpdateExecutionInfoAsync(It.IsAny<TaskExecutionInfo>()))
+            .Callback<TaskExecutionInfo>(info => capturedProgressValues.Add(info.ProgressPercent ?? 0))
+            .Returns(Task.CompletedTask);
+
         var ctx = CreateTaskExecutionContext();
 
         // Act
         await _sut.Run(ctx, CancellationToken.None);
 
-        // Assert: SetProgressAsync should have been called 3 times (once per role).
-        // The task calls ctx.SetProgressAsync(++count, roles.Count, message)
-        // which internally calls TaskStore.UpdateExecutionInfoAsync.
-        _taskStoreMock.Verify(
-            x => x.UpdateExecutionInfoAsync(It.IsAny<TaskExecutionInfo>()),
-            Times.Exactly(3));
+        // Assert: progress percentages should be 33%, 67%, 100% (one per role).
+        Assert.That(capturedProgressValues, Has.Count.EqualTo(3));
+        Assert.That(capturedProgressValues, Is.EqualTo(new[] { 33, 67, 100 }));
     }
 
     [Test]
@@ -546,7 +567,7 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
 
         // Assert: cache should be cleared since mappings were changed.
         _cacheMock.Verify(
-            x => x.RemoveByPatternAsync("acl:range-*"),
+            x => x.RemoveByPatternAsync(AclService.ACL_SEGMENT_PATTERN),
             Times.Once);
     }
 
@@ -637,6 +658,39 @@ public class TargetGroupEvaluatorTaskTests : ServiceTestBase
                 It.IsAny<int>(),
                 It.IsAny<int>()),
             Times.Never);
+    }
+
+    [Test]
+    public async Task Empty_target_group_result_deletes_old_mappings_adds_none()
+    {
+        // Arrange: seed a role with a rule set, customers, and existing system mappings.
+        var role = SeedRoleWithRuleSets("EmptyResultRole", ruleSetCount: 1);
+        var customers = SeedCustomers(3);
+        SeedSystemMappings(role.Id, customers.Select(c => c.Id));
+
+        foreach (var ruleSet in role.RuleSets)
+        {
+            SetupRuleServiceReturnsFilterExpression(ruleSet);
+        }
+
+        // Target group service returns zero customers.
+        SetupTargetGroupServiceReturnsEmpty();
+
+        var ctx = CreateTaskExecutionContext();
+
+        // Act
+        await _sut.Run(ctx, CancellationToken.None);
+
+        // Assert: old system mappings deleted, no new ones created.
+        var mappings = _sqliteDb.CustomerRoleMappings
+            .Where(m => m.CustomerRoleId == role.Id && m.IsSystemMapping)
+            .ToList();
+        Assert.That(mappings, Has.Count.EqualTo(0));
+
+        // Cache should still be cleared because numDeleted > 0.
+        _cacheMock.Verify(
+            x => x.RemoveByPatternAsync(AclService.ACL_SEGMENT_PATTERN),
+            Times.Once);
     }
 
     [Test]

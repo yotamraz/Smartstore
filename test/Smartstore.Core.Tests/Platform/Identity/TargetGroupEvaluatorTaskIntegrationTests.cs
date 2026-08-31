@@ -464,6 +464,16 @@ public class TargetGroupEvaluatorTaskIntegrationTests : ServiceTestBase
 
         SetupTargetGroupServiceReturnsCustomers(customers.Select(c => c.Id));
 
+        // Track commit count via SavedChanges event (fires after each CommitAsync).
+        var commitCount = 0;
+        _sqliteDb.SavedChanges += (sender, args) =>
+        {
+            if (args.EntitiesSavedCount > 0)
+            {
+                commitCount++;
+            }
+        };
+
         var ctx = CreateTaskExecutionContext();
 
         // Act
@@ -474,6 +484,10 @@ public class TargetGroupEvaluatorTaskIntegrationTests : ServiceTestBase
             .Count(m => m.CustomerRoleId == role.Id && m.IsSystemMapping);
         Assert.That(totalMappings, Is.EqualTo(1200),
             "All 1200 customers should have mappings regardless of chunking");
+
+        // Assert: 1200 records in chunks of 500 should produce 3 commits (500+500+200).
+        Assert.That(commitCount, Is.EqualTo(3),
+            "1200 records chunked by 500 should result in exactly 3 SaveChanges commits");
 
         // Verify each customer has exactly one mapping.
         var mappedCustomerIds = _sqliteDb.CustomerRoleMappings
@@ -489,37 +503,47 @@ public class TargetGroupEvaluatorTaskIntegrationTests : ServiceTestBase
     [Test]
     public async Task Entity_detachment_after_each_role()
     {
-        // Arrange: seed a role with one active rule set and some customers.
-        var role = SeedRoleWithRuleSets("DetachRole", ruleSetCount: 1);
-        var customers = SeedCustomers(10);
+        // Arrange: seed TWO roles to verify cross-role tracker cleanup.
+        var role1 = SeedRoleWithRuleSets("DetachRole1", ruleSetCount: 1);
+        var role2 = SeedRoleWithRuleSets("DetachRole2", ruleSetCount: 1);
+        var customers1 = SeedCustomers(5);
+        var customers2 = SeedCustomers(5);
 
-        foreach (var ruleSet in role.RuleSets)
+        foreach (var ruleSet in role1.RuleSets)
+        {
+            SetupRuleServiceReturnsFilterExpression(ruleSet);
+        }
+        foreach (var ruleSet in role2.RuleSets)
         {
             SetupRuleServiceReturnsFilterExpression(ruleSet);
         }
 
-        SetupTargetGroupServiceReturnsCustomers(customers.Select(c => c.Id));
+        var allCustomerIds = customers1.Concat(customers2).Select(c => c.Id).ToList();
+        SetupTargetGroupServiceReturnsCustomers(allCustomerIds);
 
         var ctx = CreateTaskExecutionContext();
 
         // Act
         await _sut.Run(ctx, CancellationToken.None);
 
-        // Assert: after processing, the change tracker should not hold CustomerRoleMapping entities.
-        // The task calls DetachEntities<CustomerRoleMapping>() after processing each role.
+        // Assert: after processing both roles, the change tracker should be empty.
         var trackedMappingEntries = _sqliteDb.ChangeTracker
             .Entries<CustomerRoleMapping>()
             .ToList();
 
         Assert.That(trackedMappingEntries, Has.Count.EqualTo(0),
-            "Change tracker should have no CustomerRoleMapping entries after task completes (DetachEntities was called)");
+            "Change tracker should have no CustomerRoleMapping entries after task completes (DetachEntities called per role)");
 
-        // Verify the mappings actually exist in the database (detachment doesn't delete them).
-        var persistedMappings = _sqliteDb.CustomerRoleMappings
-            .Where(m => m.CustomerRoleId == role.Id && m.IsSystemMapping)
-            .ToList();
-        Assert.That(persistedMappings, Has.Count.EqualTo(10),
-            "Mappings should be persisted in the database despite being detached from the tracker");
+        // Verify mappings for both roles are persisted.
+        var role1Mappings = _sqliteDb.CustomerRoleMappings
+            .Count(m => m.CustomerRoleId == role1.Id && m.IsSystemMapping);
+        var role2Mappings = _sqliteDb.CustomerRoleMappings
+            .Count(m => m.CustomerRoleId == role2.Id && m.IsSystemMapping);
+
+        Assert.That(role1Mappings, Is.EqualTo(10),
+            "Role1 mappings should be persisted despite detachment");
+        Assert.That(role2Mappings, Is.EqualTo(10),
+            "Role2 mappings should be persisted despite detachment");
     }
 
     [Test]
@@ -579,6 +603,35 @@ public class TargetGroupEvaluatorTaskIntegrationTests : ServiceTestBase
     }
 
     [Test]
+    public async Task Empty_target_group_result_clears_all_system_mappings()
+    {
+        // Arrange: seed a role with a rule set, customers, and existing system mappings.
+        var role = SeedRoleWithRuleSets("EmptyResultRole", ruleSetCount: 1);
+        var customers = SeedCustomers(3);
+        SeedSystemMappings(role.Id, customers.Select(c => c.Id));
+
+        foreach (var ruleSet in role.RuleSets)
+        {
+            SetupRuleServiceReturnsFilterExpression(ruleSet);
+        }
+
+        // Target group service returns zero customers.
+        SetupTargetGroupServiceReturnsEmpty();
+
+        var ctx = CreateTaskExecutionContext();
+
+        // Act
+        await _sut.Run(ctx, CancellationToken.None);
+
+        // Assert: old system mappings deleted, no new ones created.
+        var mappings = _sqliteDb.CustomerRoleMappings
+            .Where(m => m.CustomerRoleId == role.Id && m.IsSystemMapping)
+            .ToList();
+        Assert.That(mappings, Has.Count.EqualTo(0),
+            "All system mappings should be cleared when target group returns empty");
+    }
+
+    [Test]
     public async Task Multiple_rulesets_per_role_union_customers()
     {
         // Arrange: seed a role with 2 active rule sets.
@@ -593,7 +646,6 @@ public class TargetGroupEvaluatorTaskIntegrationTests : ServiceTestBase
 
         // First rule set returns customers 1-4, second returns customers 3-6.
         // Overlap on customers 3 and 4 to test deduplication via HashSet.
-        var ruleSetList = role.RuleSets.ToList();
         var firstRuleSetCustomerIds = customers.Take(4).Select(c => c.Id).ToHashSet();
         var secondRuleSetCustomerIds = customers.Skip(2).Select(c => c.Id).ToHashSet();
 
