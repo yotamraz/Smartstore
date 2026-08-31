@@ -40,7 +40,7 @@
         <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.18.0" />
         <PackageReference Include="NCrontab.Signed" Version="3.4.0" />
         <PackageReference Include="NuGet.Protocol" Version="7.3.1" />
-        <PackageReference Include="PreMailer.Net" Version="2.7.2" />
+
         <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
         <PackageReference Include="SixLabors.ImageSharp.Drawing" Version="2.1.7" />
         <PackageReference Include="System.IO.Hashing" Version="10.0.8" />
