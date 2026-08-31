@@ -31,8 +31,6 @@ if os.environ.get("WORKSPACE_DIR"):
 TEST_PROJECT_REL = os.path.join(
     "test", "Smartstore.Core.Tests", "Smartstore.Core.Tests.csproj"
 )
-TEST_PROJECT = os.path.join(SMARTSTORE_ROOT, TEST_PROJECT_REL)
-
 # The pixi activation script
 PIXI_ACTIVATE = os.environ.get("PIXI_ACTIVATE_ENV_HELPER", "")
 

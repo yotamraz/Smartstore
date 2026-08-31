@@ -30,8 +30,6 @@ if os.environ.get("WORKSPACE_DIR"):
 TEST_PROJECT_REL = os.path.join(
     "test", "Smartstore.Core.Tests", "Smartstore.Core.Tests.csproj"
 )
-TEST_PROJECT = os.path.join(SMARTSTORE_ROOT, TEST_PROJECT_REL)
-
 PIXI_ACTIVATE = os.environ.get("PIXI_ACTIVATE_ENV_HELPER", "")
 _LOCALAPPDATA = os.environ.get("LOCALAPPDATA", "")
 _USER_LOCALAPPDATA = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local")
